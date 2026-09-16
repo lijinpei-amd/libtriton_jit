@@ -38,6 +38,7 @@
 #include "triton_jit/device_ptr.h"
 #include "triton_jit/jit_function_arg.h"
 #include "triton_jit/jit_utils.h"
+#include "triton_jit/thread_safe_cache.h"
 #include "triton_jit/triton_kernel.h"
 
 namespace triton_jit {
@@ -352,24 +353,25 @@ class TritonJITFunctionImpl {
   std::string function_name_;
   StaticSignature static_sig_;
 
-  /// Cached compiled kernels (keyed by signature)
-  mutable std::unordered_map<std::string, TritonKernelImpl<Backend>> overloads_;
+  using OverloadCache = detail::ThreadSafeCache<std::string, TritonKernelImpl<Backend>>;
+
+  /// Cached compiled kernels (keyed by signature). Heap storage keeps the JIT
+  /// function movable even though ThreadSafeCache owns a shared_mutex.
+  mutable std::unique_ptr<OverloadCache> overloads_ = std::make_unique<OverloadCache>();
 
   /// Global registry of all TritonJITFunctionImpl instances
-  static std::unordered_map<std::string, std::unique_ptr<TritonJITFunctionImpl<Backend>>> functions_;
+  using FunctionCache = detail::ThreadSafeCache<std::string, TritonJITFunctionImpl<Backend>>;
+  static FunctionCache functions_;
 
  public:
   static TritonJITFunctionImpl& get_instance(std::string_view path, std::string_view name) {
     std::string key = fmt::format("{}:{}", path, name);
-
-    auto it = functions_.find(key);
-    if (it == functions_.end()) {
-      // Use new instead of make_unique since constructor is private
-      auto ptr = std::unique_ptr<TritonJITFunctionImpl>(new TritonJITFunctionImpl(path, name));
-      functions_.emplace(key, std::move(ptr));
-    }
-
-    return *functions_.at(key);
+    return functions_.get_or_create(
+        std::move(key),
+        [path, name](const std::string&) {
+          // Use new instead of make_unique since constructor is private.
+          return std::unique_ptr<TritonJITFunctionImpl>(new TritonJITFunctionImpl(path, name));
+        });
   }
 
   // Delete copy constructor and assignment
@@ -488,8 +490,7 @@ class TritonJITFunctionImpl {
 
 // Initialize static member
 template <BackendPolicy Backend>
-std::unordered_map<std::string, std::unique_ptr<TritonJITFunctionImpl<Backend>>>
-    TritonJITFunctionImpl<Backend>::functions_;
+typename TritonJITFunctionImpl<Backend>::FunctionCache TritonJITFunctionImpl<Backend>::functions_;
 
 // Compile-time checks
 template <BackendPolicy Backend>

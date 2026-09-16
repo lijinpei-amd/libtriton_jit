@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -83,11 +84,18 @@ class TritonJITFunctionImpl;
 template <BackendPolicy Backend>
 class TritonKernelImpl {
  private:
+  struct KernelState {
+    std::once_flag load_once;
+    std::atomic<bool> loaded {false};
+    typename Backend::KernelHandle kernel_handle {};
+  };
+
   std::string dir_;
   std::string kernel_name_;
   unsigned int shared_memory_ = 0;
-  mutable bool loaded_ = false;
-  mutable typename Backend::KernelHandle kernel_handle_;
+  // Keep the non-movable once_flag behind a pointer so TritonKernelImpl retains
+  // its public move-only value semantics.
+  mutable std::unique_ptr<KernelState> kernel_state_ = std::make_unique<KernelState>();
 
  public:
   TritonKernelImpl() = default;
@@ -95,8 +103,7 @@ class TritonKernelImpl {
   TritonKernelImpl(std::string_view dir, std::string_view kernel_name)
       : dir_(std::string(dir)),
         kernel_name_(std::string(kernel_name)),
-        shared_memory_(Backend::get_shared_memory(dir_, kernel_name_)),
-        loaded_(false) {
+        shared_memory_(Backend::get_shared_memory(dir_, kernel_name_)) {
   }
 
   // Delete copy constructor and assignment
@@ -173,7 +180,7 @@ class TritonKernelImpl {
 
     // Launch kernel using backend policy (unified interface)
     Backend::launch_kernel(stream,
-                           kernel_handle_,
+                           kernel_state_->kernel_handle,
                            grid_x,
                            grid_y,
                            grid_z,
@@ -197,18 +204,16 @@ class TritonKernelImpl {
   }
 
   bool is_loaded() const {
-    return loaded_;
+    return kernel_state_->loaded.load(std::memory_order_acquire);
   }
 
  private:
   void lazy_init_handle() const {
-    if (loaded_) {
-      return;
-    }
-
-    // Note: For thread safety, the backend's load_kernel should be thread-safe
-    kernel_handle_ = Backend::load_kernel(dir_, kernel_name_);
-    loaded_ = true;
+    std::call_once(kernel_state_->load_once, [this]() {
+      auto kernel_handle = Backend::load_kernel(dir_, kernel_name_);
+      kernel_state_->kernel_handle = kernel_handle;
+      kernel_state_->loaded.store(true, std::memory_order_release);
+    });
   }
 
   // Friend declaration for TritonJITFunction
