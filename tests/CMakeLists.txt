@@ -11,6 +11,10 @@ add_executable(test_runtime_concurrency test_runtime_concurrency.cpp)
 target_link_libraries(test_runtime_concurrency PRIVATE TritonJIT::triton_jit)
 add_test(NAME runtime_concurrency COMMAND test_runtime_concurrency)
 
+add_executable(test_parameter_buffer test_parameter_buffer.cpp)
+target_link_libraries(test_parameter_buffer PRIVATE TritonJIT::triton_jit)
+add_test(NAME parameter_buffer COMMAND test_parameter_buffer)
+
 add_executable(test_tuple_args test_tuple_args.cpp)
 target_link_libraries(test_tuple_args PRIVATE TritonJIT::triton_jit)
 

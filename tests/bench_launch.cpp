@@ -95,19 +95,14 @@ auto make_mixed_argument_tuple(triton_jit::TritonDevicePtr output,
 struct PreparedArguments {
   triton_jit::ParameterBuffer buffer;
   c10::SmallVector<std::string> signature;
-  c10::SmallVector<void*> pointers;
   std::string full_signature;
-
-  void refresh_pointers() {
-    pointers = buffer.get_ptrs();
-  }
 };
 
 template <typename Tuple>
 PreparedArguments prepare_arguments(const triton_jit::StaticSignature& static_signature,
                                     const Tuple& arguments) {
   PreparedArguments prepared;
-  prepared.buffer.reserve(static_signature.num_args);
+  prepared.buffer.reserve(static_signature.num_args + 2);
   prepared.signature.reserve(static_signature.num_args);
   triton_jit::ArgHandle handler {static_signature, prepared.buffer, prepared.signature, 0};
   std::apply([&](const auto&... args) { (handler.handle_arg(args), ...); }, arguments);
@@ -257,11 +252,9 @@ void run_kernel_benchmark(const std::filesystem::path& fixture,
                   full_launch);
 
   PreparedArguments prepared = prepare_arguments(function.get_static_sig(), arguments);
-  prepared.refresh_pointers();
-  print_case_profile(benchmark_name,
-                     function.get_static_sig(),
-                     prepared.full_signature,
-                     prepared.pointers.size());
+  std::span<void*> pointers = prepared.buffer.get_ptrs();
+  print_case_profile(
+      benchmark_name, function.get_static_sig(), prepared.full_signature, pointers.size());
   Backend::ensure_context();
   const int device_index = Backend::get_device_index();
   const auto& kernel =
@@ -274,7 +267,7 @@ void run_kernel_benchmark(const std::filesystem::path& fixture,
                                                       kernel.get_kernel_name(),
                                                       shared_memory,
                                                       prepared.full_signature,
-                                                      prepared.pointers.size());
+                                                      pointers.size());
   const unsigned int warp_size = get_warp_size(kernel);
 
   auto kernel_launch = [&]() {
@@ -283,9 +276,9 @@ void run_kernel_benchmark(const std::filesystem::path& fixture,
                                  1,
                                  kNumWarps,
                                  stream,
-                                 prepared.pointers.data(),
+                                 pointers.data(),
                                  prepared.full_signature,
-                                 prepared.pointers.size());
+                                 pointers.size());
   };
   auto raw_launch = [&]() {
     Backend::launch_kernel(stream,
@@ -296,15 +289,15 @@ void run_kernel_benchmark(const std::filesystem::path& fixture,
                            kNumWarps * warp_size,
                            1,
                            1,
-                           prepared.pointers.data(),
+                           pointers.data(),
                            launch_options);
   };
   auto argument_processing = [&]() {
     PreparedArguments current = prepare_arguments(function.get_static_sig(), arguments);
-    current.refresh_pointers();
+    std::span<void*> current_pointers = current.buffer.get_ptrs();
     benchmark_sink += current.buffer.size() + current.full_signature.size() +
-                      current.pointers.size() +
-                      reinterpret_cast<std::uintptr_t>(current.pointers.data());
+                      current_pointers.size() +
+                      reinterpret_cast<std::uintptr_t>(current_pointers.data());
   };
 
   validate_launch(benchmark_name,

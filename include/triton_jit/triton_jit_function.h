@@ -20,9 +20,11 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -49,44 +51,66 @@ T get_next_multiple_of(T pos, T step) {
 }
 
 struct ParameterBuffer {
-  c10::SmallVector<std::byte> buff_;
+  static constexpr size_t kInlineLaunchArgs = 32;
+  static constexpr size_t kInlineStorageBytes = 256;
+  static constexpr size_t kInlineStorageWords =
+      (kInlineStorageBytes + sizeof(std::max_align_t) - 1) / sizeof(std::max_align_t);
+
+  // Using max_align_t storage makes every byte offset aligned relative to a
+  // suitably aligned base. A SmallVector<std::byte> only guarantees byte
+  // alignment for its inline storage.
+  c10::SmallVector<std::max_align_t, kInlineStorageWords> storage_;
   size_t cursor_ = 0;
   c10::SmallVector<size_t> offsets_;
+  c10::SmallVector<void*, kInlineLaunchArgs> ptrs_;
 
   void reserve(size_t new_cap) {
     const int ESTIMATED_BYTES_PER_ARG = 4;
-    this->buff_.reserve(new_cap * ESTIMATED_BYTES_PER_ARG);
+    const size_t estimated_bytes = new_cap * ESTIMATED_BYTES_PER_ARG;
+    this->storage_.reserve(words_for_bytes(estimated_bytes));
     this->offsets_.reserve(new_cap);
+    this->ptrs_.reserve(new_cap);
   }
 
   template <typename T>
   void push_arg(T&& v) {
     using U = std::decay_t<T>;
     static_assert(std::is_trivially_copyable_v<U>, "Non trivially copyable type");
+    static_assert(alignof(U) <= alignof(std::max_align_t),
+                  "ParameterBuffer does not support over-aligned argument types");
     size_t align = alignof(U);
     size_t offset = get_next_multiple_of(this->cursor_, align);
     this->offsets_.push_back(offset);
 
     size_t size = sizeof(U);
-    this->buff_.resize(offset + size);
-    std::byte* ptr = this->buff_.data() + offset;
+    this->storage_.resize(words_for_bytes(offset + size));
+    std::byte* ptr = bytes() + offset;
     std::memcpy(ptr, &v, size);
 
     this->cursor_ = offset + size;
   }
 
-  c10::SmallVector<void*> get_ptrs() {
-    c10::SmallVector<void*> ptrs;
-    ptrs.reserve(this->offsets_.size());
-    std::byte* start = this->buff_.data();
-    for (const size_t off : this->offsets_) {
-      ptrs.push_back(start + off);
+  std::span<void*> get_ptrs() {
+    this->ptrs_.clear();
+    this->ptrs_.resize(this->offsets_.size());
+    std::byte* start = bytes();
+    for (size_t i = 0; i < this->offsets_.size(); ++i) {
+      this->ptrs_[i] = start + this->offsets_[i];
     }
-    return ptrs;
+    return this->ptrs_;
   }
 
   size_t size() const {
     return this->offsets_.size();
+  }
+
+ private:
+  static constexpr size_t words_for_bytes(size_t byte_count) {
+    return (byte_count + sizeof(std::max_align_t) - 1) / sizeof(std::max_align_t);
+  }
+
+  std::byte* bytes() {
+    return reinterpret_cast<std::byte*>(this->storage_.data());
   }
 };
 
@@ -424,7 +448,9 @@ class TritonJITFunctionImpl {
 
     // Storage for argument processing using ParameterBuffer
     ParameterBuffer buffer;
-    buffer.reserve(num_args);  // this is a coarse estimation of parameter size
+    // Non-NPU backends append two global-scratch ABI pointers. The inline
+    // pointer array covers kernels with up to 30 declared runtime arguments.
+    buffer.reserve(num_args + 2);  // this is a coarse estimation of parameter size
     c10::SmallVector<std::string> signature;
     signature.reserve(num_args);
 
@@ -449,7 +475,7 @@ class TritonJITFunctionImpl {
         this->get_kernel(full_signature, copts, device_index);
 
     // Launch kernel with signature (for NPU backend to parse argument types)
-    c10::SmallVector<void*> ptrs = buffer.get_ptrs();
+    std::span<void*> ptrs = buffer.get_ptrs();
     kernel.launch_with_signature(grid_x,
                                  grid_y,
                                  grid_z,
