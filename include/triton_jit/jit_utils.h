@@ -33,6 +33,7 @@
 
 #include "c10/util/Logging.h"  // use torch's logging
 #include "torch/torch.h"
+#include "triton_jit/device_ptr.h"
 
 #ifdef BACKEND_AMDGPU
 #include <hip/hip_runtime.h>
@@ -110,40 +111,44 @@ inline std::string make_kernel_cache_key(std::string_view signature,
 
 }  // namespace detail
 
-constexpr const char* to_triton_typename(c10::ScalarType t) {
+constexpr TritonDType to_triton_dtype(c10::ScalarType t) {
   switch (t) {
     case c10::ScalarType::Float:
-      return "fp32";
+      return TritonDType::kFp32;
     case c10::ScalarType::Double:
-      return "fp64";
+      return TritonDType::kFp64;
     case c10::ScalarType::Half:
-      return "fp16";
+      return TritonDType::kFp16;
     case c10::ScalarType::BFloat16:
-      return "bf16";
+      return TritonDType::kBf16;
     case c10::ScalarType::Int:
-      return "i32";
+      return TritonDType::kI32;
     case c10::ScalarType::Long:
-      return "i64";
+      return TritonDType::kI64;
     case c10::ScalarType::Short:
-      return "i16";
+      return TritonDType::kI16;
     case c10::ScalarType::UInt32:
-      return "u32";
+      return TritonDType::kU32;
     case c10::ScalarType::UInt64:
-      return "u64";
+      return TritonDType::kU64;
     case c10::ScalarType::UInt16:
-      return "u16";
+      return TritonDType::kU16;
     case c10::ScalarType::Char:
-      return "i8";
+      return TritonDType::kI8;
     case c10::ScalarType::Float8_e4m3fn:
-      return "fp8e4nv";
+      return TritonDType::kFp8E4NV;
     case c10::ScalarType::Byte:
-      return "u8";
+      return TritonDType::kU8;
     case c10::ScalarType::Bool:
-      return "i1";
+      return TritonDType::kI1;
     default:
       throw std::runtime_error("<unsupported_type>");
-      return "<unsupported_type>";
+      return TritonDType::kI1;
   }
+}
+
+constexpr const char* to_triton_typename(c10::ScalarType t) {
+  return to_triton_typename(to_triton_dtype(t));
 }
 
 template <typename T>
@@ -216,6 +221,22 @@ DEFINE_TRITON_TYPE(std::string, "constexpr");
 
 template <typename T>
 struct triton_type : triton_type_helper<std::remove_cv_t<std::remove_reference_t<T>>> {};
+
+template <typename T>
+constexpr TritonDType triton_dtype() {
+  return triton_dtype_of<std::remove_cv_t<std::remove_reference_t<T>>>::value;
+}
+
+template <typename T>
+constexpr TritonDType narrow_triton_dtype(const T& value) {
+  if constexpr (std::is_integral_v<std::decay_t<T>> && std::is_signed_v<std::decay_t<T>>) {
+    if (value >= INT32_MIN && value <= INT32_MAX) {
+      return TritonDType::kI32;
+    }
+    return TritonDType::kI64;
+  }
+  return triton_dtype<T>();
+}
 
 // Mimic Triton runtime's native_specialize_impl: narrow integer types by value range
 template <typename T>

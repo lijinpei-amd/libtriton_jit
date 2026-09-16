@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <tuple>
 
 #include "triton_jit/backends/npu_arg_buffer.h"
@@ -48,17 +49,18 @@ int main() {
 
   StaticSignature static_signature{1, {ArgType::NON_CONSTEXPR}};
   ParameterBuffer buffer;
-  c10::SmallVector<std::string> signature;
-  ArgHandle handler{static_signature, buffer, signature, 0};
+  triton_jit::detail::SignatureKey signature;
+  triton_jit::detail::StructuralArgHandle handler {static_signature, buffer, signature, 0};
 
   handler.handle_arg(std::tuple<float, int32_t>{3.5F, 7});
+  const std::string rendered_signature = triton_jit::detail::render_signature(signature);
 
   bool ok = true;
   ok &= expect(handler.idx == 1, "tuple must consume one static-signature slot");
   ok &= expect(buffer.size() == 2, "tuple must push one ABI value per element");
   ok &= expect(signature.size() == 1, "tuple must emit one grouped signature token");
   if (signature.size() == 1) {
-    ok &= expect(signature[0] == "(fp32,i32)", "grouped token must preserve element types");
+    ok &= expect(rendered_signature == "(fp32,i32)", "grouped token must preserve element types");
   }
 
   auto pointers = buffer.get_ptrs();
@@ -79,8 +81,11 @@ int main() {
 
   StaticSignature constexpr_signature{1, {ArgType::CONSTEXPR}};
   ParameterBuffer constexpr_buffer;
-  c10::SmallVector<std::string> constexpr_tokens;
-  ArgHandle constexpr_handler{constexpr_signature, constexpr_buffer, constexpr_tokens, 0};
+  triton_jit::detail::SignatureKey constexpr_tokens;
+  triton_jit::detail::StructuralArgHandle constexpr_handler {constexpr_signature,
+                                                             constexpr_buffer,
+                                                             constexpr_tokens,
+                                                             0};
   bool constexpr_rejected = false;
   try {
     constexpr_handler.handle_arg(std::tuple<float, int32_t>{1.0F, 2});

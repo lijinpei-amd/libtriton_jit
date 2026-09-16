@@ -33,7 +33,10 @@ struct FakeBackend {
   using StreamType = void*;
   using ContextType = void*;
   using KernelHandle = int;
-  using LaunchOptions = int;
+  struct LaunchOptions {
+    std::string signature;
+    size_t num_args;
+  };
 
   static constexpr unsigned int WARP_SIZE = 32;
 
@@ -42,6 +45,8 @@ struct FakeBackend {
   inline static int load_count = 0;
   inline static int launch_count = 0;
   inline static int current_device_index = 0;
+  inline static std::string last_signature;
+  inline static size_t last_num_args = 0;
   inline static std::map<int, int> cache_entry_count_by_device;
 
   static void ensure_context() {
@@ -63,8 +68,8 @@ struct FakeBackend {
   }
 
   static LaunchOptions prepare_launch(
-      const std::string&, const std::string&, unsigned int, const std::string&, size_t) {
-    return 0;
+      const std::string&, const std::string&, unsigned int, const std::string& signature, size_t num_args) {
+    return {.signature = signature, .num_args = num_args};
   }
 
   static void launch_kernel(StreamType,
@@ -76,7 +81,9 @@ struct FakeBackend {
                             unsigned int,
                             unsigned int,
                             void**,
-                            const LaunchOptions&) {
+                            const LaunchOptions& options) {
+    last_signature = options.signature;
+    last_num_args = options.num_args;
     ++launch_count;
   }
 
@@ -86,6 +93,8 @@ struct FakeBackend {
     load_count = 0;
     launch_count = 0;
     current_device_index = device_index;
+    last_signature.clear();
+    last_num_args = 0;
     cache_entry_count_by_device.clear();
   }
 
@@ -106,13 +115,20 @@ TritonJITFunctionImpl<FakeBackend>::TritonJITFunctionImpl(std::string_view path,
 
 template <>
 const TritonKernelImpl<FakeBackend>& TritonJITFunctionImpl<FakeBackend>::get_kernel(
-    std::string_view signature, const CompileOptions& opts, int device_index) const {
-  std::string key = detail::make_kernel_cache_key(signature, device_index, opts);
-  return overloads_->get_or_create(std::move(key), [device_index](const std::string&) {
+    detail::SignatureKey signature, const CompileOptions& opts, int device_index) const {
+  detail::KernelCacheKey key = detail::make_kernel_cache_key(std::move(signature), device_index, opts);
+  return overloads_->get_or_create(std::move(key), [device_index](const detail::KernelCacheKey& key) {
     ++FakeBackend::cache_entry_count_by_device[device_index];
     return std::make_unique<TritonKernelImpl<FakeBackend>>("device-" + std::to_string(device_index),
-                                                           "fake_kernel");
+                                                           "fake_kernel",
+                                                           detail::render_signature(key.signature()));
   });
+}
+
+template <>
+const TritonKernelImpl<FakeBackend>& TritonJITFunctionImpl<FakeBackend>::get_kernel(
+    std::string_view signature, const CompileOptions& opts, int device_index) const {
+  return get_kernel(detail::SignatureKey::raw_fallback(signature), opts, device_index);
 }
 
 }  // namespace triton_jit
@@ -139,6 +155,8 @@ void test_explicit_typed_launch_skips_backend_device_lookup() {
   REQUIRE(FakeBackend::get_device_index_count == 0);
   REQUIRE(FakeBackend::cache_entries_for(3) == 1);
   REQUIRE(FakeBackend::launch_count == 1);
+  REQUIRE(FakeBackend::last_signature == "i32");
+  REQUIRE(FakeBackend::last_num_args == 3);
 }
 
 void test_legacy_typed_launch_uses_backend_device_lookup() {
@@ -151,6 +169,8 @@ void test_legacy_typed_launch_uses_backend_device_lookup() {
   REQUIRE(FakeBackend::get_device_index_count == 1);
   REQUIRE(FakeBackend::cache_entries_for(5) == 1);
   REQUIRE(FakeBackend::launch_count == 1);
+  REQUIRE(FakeBackend::last_signature == "i32");
+  REQUIRE(FakeBackend::last_num_args == 3);
 }
 
 void test_explicit_raw_launch_skips_backend_device_lookup() {
@@ -165,6 +185,8 @@ void test_explicit_raw_launch_skips_backend_device_lookup() {
   REQUIRE(FakeBackend::get_device_index_count == 0);
   REQUIRE(FakeBackend::cache_entries_for(7) == 1);
   REQUIRE(FakeBackend::launch_count == 1);
+  REQUIRE(FakeBackend::last_signature == "i32");
+  REQUIRE(FakeBackend::last_num_args == 1);
 }
 
 void test_legacy_raw_launch_uses_backend_device_lookup() {
@@ -179,6 +201,8 @@ void test_legacy_raw_launch_uses_backend_device_lookup() {
   REQUIRE(FakeBackend::get_device_index_count == 1);
   REQUIRE(FakeBackend::cache_entries_for(9) == 1);
   REQUIRE(FakeBackend::launch_count == 1);
+  REQUIRE(FakeBackend::last_signature == "i32");
+  REQUIRE(FakeBackend::last_num_args == 1);
 }
 
 void test_explicit_devices_use_separate_cache_entries() {

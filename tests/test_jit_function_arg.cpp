@@ -95,6 +95,16 @@ bool expect_throws(Fn&& fn, const char* message) {
   return false;
 }
 
+triton_jit::detail::SignatureKey emit_jit_signature(const triton_jit::JitFunctionArg& function) {
+  using namespace triton_jit;
+  StaticSignature static_signature {1, {ArgType::NON_CONSTEXPR}};
+  ParameterBuffer buffer;
+  triton_jit::detail::SignatureKey signature;
+  triton_jit::detail::StructuralArgHandle handler {static_signature, buffer, signature, 0};
+  handler.handle_arg(function);
+  return signature;
+}
+
 }  // namespace
 
 int main() {
@@ -107,38 +117,43 @@ int main() {
 
   StaticSignature static_signature{1, {ArgType::NON_CONSTEXPR}};
   ParameterBuffer buffer;
-  c10::SmallVector<std::string> signature;
-  ArgHandle handler{static_signature, buffer, signature, 0};
+  triton_jit::detail::SignatureKey signature;
+  triton_jit::detail::StructuralArgHandle handler {static_signature, buffer, signature, 0};
   handler.handle_arg(function);
+  const std::string rendered_signature = triton_jit::detail::render_signature(signature);
 
   bool ok = true;
   ok &= expect(handler.idx == 1, "JITFunction must consume one static-signature slot");
   ok &= expect(buffer.size() == 0, "JITFunction must not push an ABI value");
   ok &= expect(signature.size() == 1, "JITFunction must emit one signature token");
+  ok &= expect(rendered_signature == function.signature_token(),
+               "ArgHandle must preserve the exact legacy JITFunction token");
   if (signature.size() == 1) {
-    const auto& token = signature[0];
+    const auto& token = rendered_signature;
     ok &= expect(token.starts_with("@jit:"), "JITFunction token must use @jit prefix");
-    ok &= expect(token.find(',') == std::string::npos,
-                 "JITFunction token must be comma-safe");
+    ok &= expect(token.find(',') == std::string::npos, "JITFunction token must be comma-safe");
     const auto path_end = token.find(':', 5);
-    const auto name_end =
-        path_end == std::string::npos ? std::string::npos : token.find(':', path_end + 1);
+    const auto name_end = path_end == std::string::npos ? std::string::npos : token.find(':', path_end + 1);
     ok &= expect(path_end != std::string::npos && name_end != std::string::npos &&
                      token.find(':', name_end + 1) == std::string::npos,
                  "JITFunction token must have exactly four colon-separated fields");
     if (path_end != std::string::npos && name_end != std::string::npos) {
-      ok &= expect(is_lower_hex(std::string_view{token}.substr(5, path_end - 5)),
+      ok &= expect(is_lower_hex(std::string_view {token}.substr(5, path_end - 5)),
                    "module path must be lowercase hex");
-      ok &= expect(is_lower_hex(
-                       std::string_view{token}.substr(path_end + 1, name_end - path_end - 1)),
+      ok &= expect(is_lower_hex(std::string_view {token}.substr(path_end + 1, name_end - path_end - 1)),
                    "function name must be lowercase hex");
-      const auto fingerprint = std::string_view{token}.substr(name_end + 1);
+      const auto fingerprint = std::string_view {token}.substr(name_end + 1);
       ok &= expect(fingerprint.size() == 16 && is_lower_hex(fingerprint),
                    "source fingerprint must be 16 lowercase hex characters");
     }
   }
   ok &= expect(function.signature_token() == same_function.signature_token(),
                "unchanged source must produce a deterministic token");
+  const triton_jit::detail::SignatureKey same_signature = emit_jit_signature(same_function);
+  ok &= expect(signature == same_signature,
+               "equivalent JITFunction arguments must produce equal structural keys");
+  ok &= expect(signature.hash() == same_signature.hash(),
+               "equal JITFunction structural keys must have equal hashes");
   const auto npu_layout = parse_signature(function.signature_token() + ",*fp32");
   ok &= expect(npu_layout.size() == 1,
                "NPU layout must not allocate an ABI entry for JITFunction");
@@ -160,9 +175,17 @@ int main() {
     std::ofstream output{temporary, std::ios::binary | std::ios::trunc};
     output << "value = 2\n";
   }
-  JitFunctionArg second_snapshot{temporary.string(), "mul_func"};
+  JitFunctionArg second_snapshot {temporary.string(), "mul_func"};
   ok &= expect(first_snapshot.signature_token() != second_snapshot.signature_token(),
                "changed source must produce a different token");
+  const triton_jit::detail::SignatureKey first_snapshot_key = emit_jit_signature(first_snapshot);
+  const triton_jit::detail::SignatureKey second_snapshot_key = emit_jit_signature(second_snapshot);
+  ok &= expect(triton_jit::detail::render_signature(first_snapshot_key) == first_snapshot.signature_token(),
+               "the first JITFunction key must render its exact legacy token");
+  ok &= expect(triton_jit::detail::render_signature(second_snapshot_key) == second_snapshot.signature_token(),
+               "the second JITFunction key must render its exact legacy token");
+  ok &= expect(!(first_snapshot_key == second_snapshot_key),
+               "changed JITFunction source must produce a different structural key");
 
   ok &= expect_throws<std::invalid_argument>(
       [&] { (void)JitFunctionArg{fixture.string(), ""}; },

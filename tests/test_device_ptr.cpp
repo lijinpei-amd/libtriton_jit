@@ -54,10 +54,27 @@ Emitted emit(const std::vector<triton_jit::ArgType>& kinds, Args... args) {
   using namespace triton_jit;
   StaticSignature static_signature {static_cast<int>(kinds.size()), kinds};
   ParameterBuffer buffer;
-  c10::SmallVector<std::string> signature;
-  ArgHandle handler {static_signature, buffer, signature, 0};
+  triton_jit::detail::SignatureKey signature;
+  triton_jit::detail::StructuralArgHandle handler {static_signature, buffer, signature, 0};
   handler.handle_args(args...);
-  return Emitted {std::vector<std::string>(signature.begin(), signature.end()), buffer.size(), handler.idx};
+  std::string rendered_signature = triton_jit::detail::render_signature(signature);
+  std::vector<std::string> tokens;
+  size_t token_start = 0;
+  int tuple_depth = 0;
+  for (size_t i = 0; i <= rendered_signature.size(); ++i) {
+    if (i == rendered_signature.size() || (rendered_signature[i] == ',' && tuple_depth == 0)) {
+      tokens.emplace_back(rendered_signature.substr(token_start, i - token_start));
+      token_start = i + 1;
+    } else if (rendered_signature[i] == '(') {
+      ++tuple_depth;
+    } else if (rendered_signature[i] == ')') {
+      --tuple_depth;
+    }
+  }
+  if (signature.empty()) {
+    tokens.clear();
+  }
+  return Emitted {std::move(tokens), buffer.size(), handler.idx};
 }
 
 void expect_token(const Emitted& e, size_t index, const char* expected, const char* what) {

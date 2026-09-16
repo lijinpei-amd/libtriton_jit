@@ -94,17 +94,17 @@ auto make_mixed_argument_tuple(triton_jit::TritonDevicePtr output,
 
 struct PreparedArguments {
   triton_jit::ParameterBuffer buffer;
-  c10::SmallVector<std::string> signature;
+  triton_jit::detail::SignatureKey signature;
   std::string full_signature;
 };
 
 template <typename Tuple>
 PreparedArguments prepare_arguments(const triton_jit::StaticSignature& static_signature,
-                                    const Tuple& arguments) {
+                                    const Tuple& arguments,
+                                    bool render_signature_text = true) {
   PreparedArguments prepared;
   prepared.buffer.reserve(static_signature.num_args + 2);
-  prepared.signature.reserve(static_signature.num_args);
-  triton_jit::ArgHandle handler {static_signature, prepared.buffer, prepared.signature, 0};
+  triton_jit::detail::StructuralArgHandle handler {static_signature, prepared.buffer, prepared.signature, 0};
   std::apply([&](const auto&... args) { (handler.handle_arg(args), ...); }, arguments);
 
 #if !defined(BACKEND_NPU)
@@ -112,7 +112,9 @@ PreparedArguments prepare_arguments(const triton_jit::StaticSignature& static_si
   handler.append_global_scratch();
 #endif
 
-  prepared.full_signature = triton_jit::join_sig(prepared.signature);
+  if (render_signature_text) {
+    prepared.full_signature = triton_jit::detail::render_signature(prepared.signature);
+  }
   return prepared;
 }
 
@@ -293,11 +295,10 @@ void run_kernel_benchmark(const std::filesystem::path& fixture,
                            launch_options);
   };
   auto argument_processing = [&]() {
-    PreparedArguments current = prepare_arguments(function.get_static_sig(), arguments);
+    PreparedArguments current = prepare_arguments(function.get_static_sig(), arguments, false);
     std::span<void*> current_pointers = current.buffer.get_ptrs();
-    benchmark_sink += current.buffer.size() + current.full_signature.size() +
-                      current_pointers.size() +
-                      reinterpret_cast<std::uintptr_t>(current_pointers.data());
+    benchmark_sink += current.buffer.size() + current.signature.size() + current.signature.hash() +
+                      current_pointers.size() + reinterpret_cast<std::uintptr_t>(current_pointers.data());
   };
 
   validate_launch(benchmark_name,

@@ -154,18 +154,18 @@ bool test_tuple_expansion() {
   StaticSignature static_signature{1, {ArgType::NON_CONSTEXPR}};
   ParameterBuffer buffer;
   buffer.reserve(3);
-  c10::SmallVector<std::string> signature;
-  ArgHandle handler{static_signature, buffer, signature, 0};
+  triton_jit::detail::SignatureKey signature;
+  triton_jit::detail::StructuralArgHandle handler {static_signature, buffer, signature, 0};
 
   handler.handle_arg(std::tuple<uint32_t, uint64_t, float>{7U, 11U, 13.5F});
+  const std::string rendered_signature = triton_jit::detail::render_signature(signature);
   auto pointers = buffer.get_ptrs();
 
   bool ok = expect(handler.idx == 1, "tuple must consume one static-signature slot");
   ok &= expect(buffer.size() == 3, "tuple must expand to one ABI value per element");
   ok &= expect(signature.size() == 1, "tuple must emit one grouped signature token");
   if (signature.size() == 1) {
-    ok &= expect(signature[0] == "(u32,u64,fp32)",
-                 "tuple signature must preserve element types");
+    ok &= expect(rendered_signature == "(u32,u64,fp32)", "tuple signature must preserve element types");
   }
   ok &= expect(pointers.size() == 3, "tuple must expose three ABI pointers");
   if (pointers.size() == 3) {

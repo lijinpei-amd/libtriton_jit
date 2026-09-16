@@ -93,55 +93,63 @@ TritonJITFunctionImpl<Backend>::TritonJITFunctionImpl(std::string_view path, std
 }
 
 template <BackendPolicy Backend>
-const TritonKernelImpl<Backend>& TritonJITFunctionImpl<Backend>::get_kernel(std::string_view _signature,
+const TritonKernelImpl<Backend>& TritonJITFunctionImpl<Backend>::get_kernel(std::string_view signature,
                                                                             const CompileOptions& opts,
                                                                             int device_index) const {
-  std::string signature(_signature);
-  // The cache key must encode everything that changes the compiled artifact. The old
-  // key was just "{signature};{device_index}", so two launches that differed only in
-  // num_warps/num_stages/opt_level collided on the same cache entry and the second
-  // silently reused the first one's binary. Fold those compile options into the key.
-  std::string key = detail::make_kernel_cache_key(signature, device_index, opts);
+  return get_kernel(detail::SignatureKey::raw_fallback(signature), opts, device_index);
+}
 
-  return this->overloads_->get_or_create(
-      std::move(key),
-      [&](const std::string& cache_key) {
-        if (std::getenv("LTJ_DUMP_KEY")) {
-          fmt::print(stderr, "[LTJ_CACHE_MISS] key={}\n", cache_key);
-        }
+template <BackendPolicy Backend>
+const TritonKernelImpl<Backend>& TritonJITFunctionImpl<Backend>::get_kernel(detail::SignatureKey signature,
+                                                                            const CompileOptions& opts,
+                                                                            int device_index) const {
+  detail::KernelCacheKey key = detail::make_kernel_cache_key(std::move(signature), device_index, opts);
 
-        // Compile kernel via Python. ThreadSafeCache deliberately invokes this
-        // factory without holding its mutex, avoiding a cache-lock/GIL cycle.
-        namespace py = pybind11;
-        ensure_initialized();
-        py::gil_scoped_acquire gil;
+  return this->overloads_->get_or_create(std::move(key), [&](const detail::KernelCacheKey& cache_key) {
+    std::string rendered_signature = detail::render_signature(cache_key.signature());
+    if (std::getenv("LTJ_DUMP_KEY")) {
+      fmt::print(stderr,
+                 "[LTJ_CACHE_MISS] sig={} dev={} nw={} ns={}\n",
+                 rendered_signature,
+                 cache_key.device_index(),
+                 cache_key.num_warps(),
+                 cache_key.num_stages());
+    }
 
-        std::filesystem::path script_dir = get_script_dir();
-        py::module_ sys = py::module_::import("sys");
-        sys.attr("path").attr("insert")(0, script_dir.c_str());
-        py::module_ mod = py::module_::import("standalone_compile");
-        py::object fn = mod.attr("compile_a_kernel");
-        py::object ans;
-        try {
-          py::dict extra_dict;
-          for (const auto& kv : opts.extra) {
-            extra_dict[py::str(kv.first)] = py::str(kv.second);
-          }
-          ans = fn(this->file_path_,
-                   this->function_name_,
-                   signature,
-                   opts.num_warps,
-                   opts.num_stages,
-                   device_index,
-                   extra_dict);
-        } catch (const py::error_already_set& e) {
-          std::cerr << "Python exception: " << e.what() << std::endl;
-          throw;
-        }
+    // Compile kernel via Python. ThreadSafeCache deliberately invokes this
+    // factory without holding its mutex, avoiding a cache-lock/GIL cycle.
+    namespace py = pybind11;
+    ensure_initialized();
+    py::gil_scoped_acquire gil;
 
-        std::string cache_dir = ans.cast<std::string>();
-        return std::make_unique<TritonKernelImpl<Backend>>(cache_dir, this->function_name_);
-      });
+    std::filesystem::path script_dir = get_script_dir();
+    py::module_ sys = py::module_::import("sys");
+    sys.attr("path").attr("insert")(0, script_dir.c_str());
+    py::module_ mod = py::module_::import("standalone_compile");
+    py::object fn = mod.attr("compile_a_kernel");
+    py::object ans;
+    try {
+      py::dict extra_dict;
+      for (const auto& kv : cache_key.extra()) {
+        extra_dict[py::str(kv.first)] = py::str(kv.second);
+      }
+      ans = fn(this->file_path_,
+               this->function_name_,
+               rendered_signature,
+               cache_key.num_warps(),
+               cache_key.num_stages(),
+               cache_key.device_index(),
+               extra_dict);
+    } catch (const py::error_already_set& e) {
+      std::cerr << "Python exception: " << e.what() << std::endl;
+      throw;
+    }
+
+    std::string cache_dir = ans.cast<std::string>();
+    return std::make_unique<TritonKernelImpl<Backend>>(cache_dir,
+                                                       this->function_name_,
+                                                       std::move(rendered_signature));
+  });
 }
 
 }  // namespace triton_jit

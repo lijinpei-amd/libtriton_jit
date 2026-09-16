@@ -26,6 +26,7 @@
 #include <optional>
 #include <span>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -40,6 +41,7 @@
 #include "triton_jit/device_ptr.h"
 #include "triton_jit/jit_function_arg.h"
 #include "triton_jit/jit_utils.h"
+#include "triton_jit/signature_key.h"
 #include "triton_jit/thread_safe_cache.h"
 #include "triton_jit/triton_kernel.h"
 
@@ -142,88 +144,219 @@ inline constexpr bool is_runtime_tuple_element_v =
     is_same_ignore_cvref<int64_t, T>::value || is_same_ignore_cvref<uint64_t, T>::value ||
     is_same_ignore_cvref<float, T>::value || is_same_ignore_cvref<double, T>::value;
 
-struct ArgHandle {
-  const StaticSignature& ssig;
-  /* data pointer of Tensors;
-  It is not straightforward to extract data pointer from a tensor, since it is encapsulated
-  by Storage. We gather data pointers here for them to live out of the loop while iterating
-  over arguments.*/
-  ParameterBuffer& buf;
-  c10::SmallVector<std::string>& signature;
-  int idx;
+namespace detail {
 
-  template <typename... Args>
-  void handle_args(Args... args) {
-    (handle_arg(args), ...);
-  }
+  using LegacySignature = c10::SmallVector<std::string>;
 
-  template <typename T>
-  void handle_arg(const T& item) {
-    if constexpr (is_optional<decltype(item)>::value) {
-      handle_optional(item);
-    } else if constexpr (is_same_ignore_cvref<c10::Scalar, T>::value) {
-      handle_scalar(item);
-    } else if constexpr (is_same_ignore_cvref<JitFunctionArg, T>::value) {
-      handle_jitfunction(item);
-    } else if constexpr (is_std_tuple<std::remove_cvref_t<T>>::value) {
-      handle_tuple(item);
-    } else {
-      handle_arg_plain(item);
+  inline std::string_view signature_suffix(SignatureSpecialization specialization) {
+    switch (specialization) {
+      case SignatureSpecialization::kNone:
+        return {};
+      case SignatureSpecialization::kDivisibleBy16:
+        return ":16";
+      case SignatureSpecialization::kEqualToOne:
+        return ":1";
     }
+    throw std::logic_error("invalid signature specialization");
   }
 
-  void handle_jitfunction(const JitFunctionArg& item) {
-    (void)this->ssig.at(idx);
-    signature.push_back(item.signature_token());
-    idx++;
+  inline void emit_runtime_scalar(LegacySignature& signature,
+                                  TritonDType dtype,
+                                  SignatureSpecialization specialization = SignatureSpecialization::kNone) {
+    signature.push_back(fmt::format("{}{}", to_triton_typename(dtype), signature_suffix(specialization)));
   }
 
-  template <typename... Ts>
-  void handle_tuple(const std::tuple<Ts...>& item) {
-    static_assert(sizeof...(Ts) > 0, "Runtime tuple arguments must not be empty");
-    static_assert((is_runtime_tuple_element_v<Ts> && ...),
-                  "Runtime tuple arguments contain an unsupported scalar type");
-    TORCH_CHECK(this->ssig.at(idx) != ArgType::CONSTEXPR,
-                "Runtime tuple arguments cannot be constexpr");
+  inline void emit_runtime_scalar(SignatureKey& signature,
+                                  TritonDType dtype,
+                                  SignatureSpecialization specialization = SignatureSpecialization::kNone) {
+    signature.append_runtime_scalar(dtype, specialization);
+  }
 
-    std::string grouped_signature = "(";
-    bool first = true;
-    auto append_element = [&](const auto& element) {
-      if (!first) {
-        grouped_signature += ",";
+  inline void emit_runtime_pointer(LegacySignature& signature,
+                                   TritonDType dtype,
+                                   SignatureSpecialization specialization = SignatureSpecialization::kNone) {
+    signature.push_back(fmt::format("*{}{}", to_triton_typename(dtype), signature_suffix(specialization)));
+  }
+
+  inline void emit_runtime_pointer(SignatureKey& signature,
+                                   TritonDType dtype,
+                                   SignatureSpecialization specialization = SignatureSpecialization::kNone) {
+    signature.append_runtime_pointer(dtype, specialization);
+  }
+
+  inline void emit_runtime_tuple(LegacySignature& signature, std::span<const TritonDType> element_types) {
+    std::string token = "(";
+    for (size_t i = 0; i < element_types.size(); ++i) {
+      if (i != 0) {
+        token.push_back(',');
       }
-      first = false;
-      this->buf.push_arg(element);
-      grouped_signature += triton_type<std::remove_cvref_t<decltype(element)>>::name;
-    };
-    std::apply([&](const auto&... elements) { (append_element(elements), ...); }, item);
-    grouped_signature += ")";
+      token += to_triton_typename(element_types[i]);
+    }
+    token.push_back(')');
+    signature.push_back(std::move(token));
+  }
 
-    signature.push_back(std::move(grouped_signature));
-    idx++;
+  inline void emit_runtime_tuple(SignatureKey& signature, std::span<const TritonDType> element_types) {
+    signature.append_runtime_tuple(element_types);
+  }
+
+  inline void emit_nullopt(LegacySignature& signature) {
+    signature.push_back("nullopt");
+  }
+
+  inline void emit_nullopt(SignatureKey& signature) {
+    signature.append_nullopt();
+  }
+
+  inline void emit_jit_function(LegacySignature& signature, const JitFunctionArg& item) {
+    signature.push_back(item.signature_token());
+  }
+
+  inline void emit_jit_function(SignatureKey& signature, const JitFunctionArg& item) {
+    signature.append_jit_function(item.signature_token());
+  }
+
+  inline void emit_runtime_text(LegacySignature& signature, std::string_view token) {
+    signature.emplace_back(token);
+  }
+
+  inline void emit_runtime_text(SignatureKey& signature, std::string_view token) {
+    signature.append_runtime_text(token);
   }
 
   template <typename T>
-  void handle_optional(const std::optional<T>& item) {
-    if (item.has_value()) {
-      const T& v = item.value();
-      handle_arg(v);
+  concept HasLegacyTritonTypeName = requires { triton_type<std::remove_cvref_t<T>>::name; };
+
+  template <typename SignatureSink, typename T>
+  void emit_runtime_value(SignatureSink& signature, const T& item) {
+    using U = std::remove_cvref_t<T>;
+    if constexpr (!std::is_arithmetic_v<U>) {
+      if constexpr (HasLegacyTritonTypeName<U>) {
+        emit_runtime_text(signature, triton_type<U>::name);
+      } else {
+        emit_runtime_scalar(signature, narrow_triton_dtype(item));
+      }
     } else {
-      handle_arg(std::nullopt);
+      emit_runtime_scalar(signature, narrow_triton_dtype(item));
     }
   }
 
-  void handle_scalar(const c10::Scalar& item) {
-    TORCH_CHECK(!item.isSymbolic());
-    c10::ScalarType tp = item.type();
-    const void* p = item.data_ptr();
-    if (tp == c10::ScalarType::Bool) {
-      handle_arg_plain(*reinterpret_cast<const bool*>(p));
-    } else if (tp == c10::ScalarType::Long) {
-      handle_arg_plain(*reinterpret_cast<const int64_t*>(p));
-    } else if (tp == c10::ScalarType::UInt64) {
-      handle_arg_plain(*reinterpret_cast<const uint64_t*>(p));
-    } else if (tp == c10::ScalarType::Double) {
+  template <typename T>
+  void emit_constexpr(LegacySignature& signature, const T& item) {
+    signature.push_back(fmt::format("{}", item));
+  }
+
+  template <typename T>
+  void emit_constexpr(SignatureKey& signature, const T& item) {
+    using U = std::remove_cvref_t<T>;
+    if constexpr (std::is_same_v<U, bool>) {
+      signature.append_constexpr_bool(item);
+    } else if constexpr (std::is_same_v<U, char> || std::is_same_v<U, signed char> ||
+                         std::is_same_v<U, unsigned char>) {
+      signature.append_constexpr_string(fmt::format("{}", item));
+    } else if constexpr (std::is_integral_v<U>) {
+      signature.append_constexpr_integer(item);
+    } else if constexpr (std::is_same_v<U, float>) {
+      signature.append_constexpr_f32(item);
+    } else if constexpr (std::is_same_v<U, double>) {
+      signature.append_constexpr_f64(item);
+    } else if constexpr (std::is_same_v<U, std::string>) {
+      signature.append_constexpr_string(item);
+    } else if constexpr (std::is_same_v<U, std::string_view>) {
+      signature.append_constexpr_string(item);
+    } else if constexpr (std::is_array_v<U> &&
+                         std::is_same_v<std::remove_cv_t<std::remove_extent_t<U>>, char>) {
+      signature.append_constexpr_string(std::string_view(item));
+    } else if constexpr (std::is_same_v<U, const char*> || std::is_same_v<U, char*>) {
+      if (item == nullptr) {
+        signature.append_constexpr_string(fmt::format("{}", item));
+      } else {
+        signature.append_constexpr_string(item);
+      }
+    } else {
+      // Preserve the full legacy constexpr surface. Uncommon fmt-formattable
+      // types retain exact semantics while common numeric/string types avoid
+      // formatting on cache hits.
+      signature.append_constexpr_string(fmt::format("{}", item));
+    }
+  }
+
+  template <typename SignatureSink>
+  struct BasicArgHandle {
+    const StaticSignature& ssig;
+    /* data pointer of Tensors;
+    It is not straightforward to extract data pointer from a tensor, since it is encapsulated
+    by Storage. We gather data pointers here for them to live out of the loop while iterating
+    over arguments.*/
+    ParameterBuffer& buf;
+    SignatureSink& signature;
+    int idx;
+
+    template <typename... Args>
+    void handle_args(Args... args) {
+      (handle_arg(args), ...);
+    }
+
+    template <typename T>
+    void handle_arg(const T& item) {
+      if constexpr (is_optional<decltype(item)>::value) {
+        handle_optional(item);
+      } else if constexpr (is_same_ignore_cvref<c10::Scalar, T>::value) {
+        handle_scalar(item);
+      } else if constexpr (is_same_ignore_cvref<JitFunctionArg, T>::value) {
+        handle_jitfunction(item);
+      } else if constexpr (is_std_tuple<std::remove_cvref_t<T>>::value) {
+        handle_tuple(item);
+      } else {
+        handle_arg_plain(item);
+      }
+    }
+
+    void handle_jitfunction(const JitFunctionArg& item) {
+      (void)this->ssig.at(idx);
+      emit_jit_function(signature, item);
+      idx++;
+    }
+
+    template <typename... Ts>
+    void handle_tuple(const std::tuple<Ts...>& item) {
+      static_assert(sizeof...(Ts) > 0, "Runtime tuple arguments must not be empty");
+      static_assert((is_runtime_tuple_element_v<Ts> && ...),
+                    "Runtime tuple arguments contain an unsupported scalar type");
+      TORCH_CHECK(this->ssig.at(idx) != ArgType::CONSTEXPR, "Runtime tuple arguments cannot be constexpr");
+
+      c10::SmallVector<TritonDType, 8> element_types;
+      element_types.reserve(sizeof...(Ts));
+      auto append_element = [&](const auto& element) {
+        this->buf.push_arg(element);
+        element_types.push_back(triton_dtype<std::remove_cvref_t<decltype(element)>>());
+      };
+      std::apply([&](const auto&... elements) { (append_element(elements), ...); }, item);
+      emit_runtime_tuple(signature, element_types);
+      idx++;
+    }
+
+    template <typename T>
+    void handle_optional(const std::optional<T>& item) {
+      if (item.has_value()) {
+        const T& v = item.value();
+        handle_arg(v);
+      } else {
+        handle_arg(std::nullopt);
+      }
+    }
+
+    void handle_scalar(const c10::Scalar& item) {
+      TORCH_CHECK(!item.isSymbolic());
+      c10::ScalarType tp = item.type();
+      const void* p = item.data_ptr();
+      if (tp == c10::ScalarType::Bool) {
+        handle_arg_plain(*reinterpret_cast<const bool*>(p));
+      } else if (tp == c10::ScalarType::Long) {
+        handle_arg_plain(*reinterpret_cast<const int64_t*>(p));
+      } else if (tp == c10::ScalarType::UInt64) {
+        handle_arg_plain(*reinterpret_cast<const uint64_t*>(p));
+      } else if (tp == c10::ScalarType::Double) {
 #if defined(BACKEND_GCU)
       float f = static_cast<float>(*reinterpret_cast<const double*>(p));
       handle_arg_plain(f);
@@ -241,10 +374,17 @@ struct ArgHandle {
       handle_tensor(item);
     } else if constexpr (is_same_ignore_cvref<TritonDevicePtr, T>::value) {
       handle_device_ptr(item);
+    } else if constexpr (is_same_ignore_cvref<std::nullptr_t, T>::value) {
+      if (ssig.at(idx) == ArgType::CONSTEXPR) {
+        handle_constexpr(item);
+      } else {
+        this->buf.push_arg(item);
+        emit_runtime_pointer(signature, TritonDType::kI8);
+      }
     } else if constexpr (is_same_ignore_cvref<std::nullopt_t, T>::value) {
       // Assumption: nullopt is always treated as constexpr,
       // even if the parameter is not marked as constexpr
-      signature.push_back("nullopt");
+      emit_nullopt(signature);
     } else if constexpr (std::is_same_v<std::decay_t<T>, const char*> ||
                          std::is_same_v<std::decay_t<T>, char*> ||
                          is_same_ignore_cvref<std::string, T>::value ||
@@ -274,18 +414,17 @@ struct ArgHandle {
     TORCH_CHECK(this->ssig.at(idx) != ArgType::CONSTEXPR);
     void* p_item = item.data_ptr();
     this->buf.push_arg(p_item);
-    const char* dtype = to_triton_typename(item.scalar_type());
-
-    const char* specialization = "";
+    detail::SignatureSpecialization specialization = detail::SignatureSpecialization::kNone;
     if (ssig.at(idx) == ArgType::SPECIALIZED) {
 #if defined(BACKEND_NPU)
       // NPU: disable pointer specialization to keep arg list consistent
 #else
-      specialization = ptr_spec(reinterpret_cast<std::uintptr_t>(p_item));
+      if (reinterpret_cast<std::uintptr_t>(p_item) % 16 == 0) {
+        specialization = detail::SignatureSpecialization::kDivisibleBy16;
+      }
 #endif
     }
-    std::string sig_for_idx = fmt::format("*{}{}", dtype, specialization);
-    signature.push_back(sig_for_idx);
+    emit_runtime_pointer(signature, to_triton_dtype(item.scalar_type()), specialization);
   }
 
   // Raw device pointer with an explicit element dtype (see device_ptr.h).
@@ -295,80 +434,192 @@ struct ArgHandle {
     // Assumption: a device pointer is never constexpr
     TORCH_CHECK(this->ssig.at(idx) != ArgType::CONSTEXPR);
     this->buf.push_arg(item.value);
-    const char* dtype = to_triton_typename(item.dtype);
-
-    const char* specialization = "";
+    detail::SignatureSpecialization specialization = detail::SignatureSpecialization::kNone;
     if (ssig.at(idx) == ArgType::SPECIALIZED) {
 #if defined(BACKEND_NPU)
       // NPU: disable pointer specialization to keep arg list consistent
 #else
-      specialization = ptr_spec(item.value);
+      if (item.value % 16 == 0) {
+        specialization = detail::SignatureSpecialization::kDivisibleBy16;
+      }
 #endif
     }
-    std::string sig_for_idx = fmt::format("*{}{}", dtype, specialization);
-    signature.push_back(sig_for_idx);
+    emit_runtime_pointer(signature, item.dtype, specialization);
   }
 
   template <typename T>
   void handle_constexpr(const T& item) {
-    signature.push_back(fmt::format("{}", item));
+    emit_constexpr(signature, item);
   }
 
   template <typename T>
   void handle_specialized(const T& item) {
-    const char* dtype = narrow_type_name(item);
-    if constexpr (std::is_integral_v<std::remove_cv_t<std::remove_reference_t<decltype(item)>>>) {
-      const char* specialization = "";
-#if defined(BACKEND_NPU)
-      // NPU: disable :1 specialization so args are always passed
+    using U = std::remove_cvref_t<T>;
+    if constexpr (std::is_same_v<U, std::nullptr_t>) {
       this->buf.push_arg(item);
-#else
-      specialization = spec(item);
-      if (specialization != ":1") {
-        this->buf.push_arg(item);
-      }
-#endif
-      std::string sig_for_idx = fmt::format("{}{}", dtype, specialization);
-      signature.push_back(sig_for_idx);
+      emit_runtime_pointer(signature, TritonDType::kI8);
     } else {
-      this->buf.push_arg(item);
-      std::string sig_for_idx = fmt::format("{}", dtype);
-      signature.push_back(sig_for_idx);
+      if constexpr (std::is_integral_v<U>) {
+        const TritonDType dtype = narrow_triton_dtype(item);
+        detail::SignatureSpecialization specialization = detail::SignatureSpecialization::kNone;
+#if defined(BACKEND_NPU)
+        // NPU: disable :1 specialization so args are always passed
+        this->buf.push_arg(item);
+#else
+        if (item % 16 == 0) {
+          specialization = detail::SignatureSpecialization::kDivisibleBy16;
+        } else if (item == 1) {
+          specialization = detail::SignatureSpecialization::kEqualToOne;
+        }
+        if (specialization != detail::SignatureSpecialization::kEqualToOne) {
+          this->buf.push_arg(item);
+        }
+#endif
+        emit_runtime_scalar(signature, dtype, specialization);
+      } else {
+        this->buf.push_arg(item);
+        emit_runtime_value(signature, item);
+      }
     }
   }
 
   template <typename T>
   void handle_specialized_no_alignment(const T& item) {
-    const char* dtype = narrow_type_name(item);
-    if constexpr (std::is_integral_v<std::remove_cv_t<std::remove_reference_t<decltype(item)>>>) {
-      const bool equal_to_1 = item == 1;
-#if defined(BACKEND_NPU)
+    using U = std::remove_cvref_t<T>;
+    if constexpr (std::is_same_v<U, std::nullptr_t>) {
       this->buf.push_arg(item);
-      signature.push_back(dtype);
-#else
-      if (!equal_to_1) {
-        this->buf.push_arg(item);
-      }
-      std::string sig_for_idx = fmt::format("{}{}", dtype, equal_to_1 ? ":1" : "");
-      signature.push_back(sig_for_idx);
-#endif
+      emit_runtime_pointer(signature, TritonDType::kI8);
     } else {
-      handle_non_constexpr(item);
+      if constexpr (std::is_integral_v<U>) {
+        const TritonDType dtype = narrow_triton_dtype(item);
+        const bool equal_to_1 = item == 1;
+#if defined(BACKEND_NPU)
+        this->buf.push_arg(item);
+        emit_runtime_scalar(signature, dtype);
+#else
+        if (!equal_to_1) {
+          this->buf.push_arg(item);
+        }
+        emit_runtime_scalar(signature,
+                            dtype,
+                            equal_to_1 ? detail::SignatureSpecialization::kEqualToOne
+                                       : detail::SignatureSpecialization::kNone);
+#endif
+      } else {
+        handle_non_constexpr(item);
+      }
     }
   }
 
   template <typename T>
   void handle_non_constexpr(const T& item) {
     this->buf.push_arg(item);
-    const char* dtype = narrow_type_name(item);
-    signature.push_back(dtype);
+    if constexpr (std::is_same_v<std::remove_cvref_t<T>, std::nullptr_t>) {
+      emit_runtime_pointer(signature, TritonDType::kI8);
+    } else {
+      emit_runtime_value(signature, item);
+    }
   }
 
   void append_global_scratch() {
     void* global_scratch = nullptr;
     this->buf.push_arg(global_scratch);
   }
+  };
+
+  using StructuralArgHandle = BasicArgHandle<SignatureKey>;
+
+}  // namespace detail
+
+// Compatibility façade for callers that use ArgHandle directly. Its public
+// aggregate layout and string-token output remain unchanged; the runtime uses
+// detail::StructuralArgHandle so cache hits avoid constructing those strings.
+struct ArgHandle {
+  const StaticSignature& ssig;
+  ParameterBuffer& buf;
+  c10::SmallVector<std::string>& signature;
+  int idx;
+
+  template <typename... Args>
+  void handle_args(Args... args) {
+    with_handler([&](auto& handler) { (handler.handle_arg(args), ...); });
+  }
+
+  template <typename T>
+  void handle_arg(const T& item) {
+    with_handler([&](auto& handler) { handler.handle_arg(item); });
+  }
+
+  void handle_jitfunction(const JitFunctionArg& item) {
+    with_handler([&](auto& handler) { handler.handle_jitfunction(item); });
+  }
+
+  template <typename... Ts>
+  void handle_tuple(const std::tuple<Ts...>& item) {
+    with_handler([&](auto& handler) { handler.handle_tuple(item); });
+  }
+
+  template <typename T>
+  void handle_optional(const std::optional<T>& item) {
+    with_handler([&](auto& handler) { handler.handle_optional(item); });
+  }
+
+  void handle_scalar(const c10::Scalar& item) {
+    with_handler([&](auto& handler) { handler.handle_scalar(item); });
+  }
+
+  template <typename T>
+  void handle_arg_plain(const T& item) {
+    with_handler([&](auto& handler) { handler.handle_arg_plain(item); });
+  }
+
+  void handle_tensor(const at::Tensor& item) {
+    with_handler([&](auto& handler) { handler.handle_tensor(item); });
+  }
+
+  void handle_device_ptr(const TritonDevicePtr& item) {
+    with_handler([&](auto& handler) { handler.handle_device_ptr(item); });
+  }
+
+  template <typename T>
+  void handle_constexpr(const T& item) {
+    with_handler([&](auto& handler) { handler.handle_constexpr(item); });
+  }
+
+  template <typename T>
+  void handle_specialized(const T& item) {
+    with_handler([&](auto& handler) { handler.handle_specialized(item); });
+  }
+
+  template <typename T>
+  void handle_specialized_no_alignment(const T& item) {
+    with_handler([&](auto& handler) { handler.handle_specialized_no_alignment(item); });
+  }
+
+  template <typename T>
+  void handle_non_constexpr(const T& item) {
+    with_handler([&](auto& handler) { handler.handle_non_constexpr(item); });
+  }
+
+  void append_global_scratch() {
+    with_handler([](auto& handler) { handler.append_global_scratch(); });
+  }
+
+ private:
+  template <typename Function>
+  void with_handler(Function&& function) {
+    detail::BasicArgHandle<detail::LegacySignature> handler {ssig, buf, signature, idx};
+    try {
+      std::forward<Function>(function)(handler);
+    } catch (...) {
+      idx = handler.idx;
+      throw;
+    }
+    idx = handler.idx;
+  }
 };
+
+static_assert(std::is_aggregate_v<ArgHandle>);
 
 template <BackendPolicy Backend>
 class TritonJITFunctionImpl {
@@ -377,7 +628,8 @@ class TritonJITFunctionImpl {
   std::string function_name_;
   StaticSignature static_sig_;
 
-  using OverloadCache = detail::ThreadSafeCache<std::string, TritonKernelImpl<Backend>>;
+  using OverloadCache =
+      detail::ThreadSafeCache<detail::KernelCacheKey, TritonKernelImpl<Backend>, detail::KernelCacheKeyHash>;
 
   /// Cached compiled kernels (keyed by signature). Heap storage keeps the JIT
   /// function movable even though ThreadSafeCache owns a shared_mutex.
@@ -481,11 +733,10 @@ class TritonJITFunctionImpl {
     // Non-NPU backends append two global-scratch ABI pointers. The inline
     // pointer array covers kernels with up to 30 declared runtime arguments.
     buffer.reserve(num_args + 2);  // this is a coarse estimation of parameter size
-    c10::SmallVector<std::string> signature;
-    signature.reserve(num_args);
+    detail::SignatureKey signature;
 
     // Process arguments
-    ArgHandle handler = {this->static_sig_, buffer, signature, 0};
+    detail::StructuralArgHandle handler = {this->static_sig_, buffer, signature, 0};
     (handler.handle_arg(args), ...);
 
 #if !defined(BACKEND_NPU)
@@ -494,22 +745,14 @@ class TritonJITFunctionImpl {
     handler.append_global_scratch();
     handler.append_global_scratch();
 #endif
-    std::string full_signature = join_sig(signature);
 
     // Get or compile kernel
-    const TritonKernelImpl<Backend>& kernel =
-        this->get_kernel(full_signature, copts, device_index);
+    const TritonKernelImpl<Backend>& kernel = this->get_kernel(std::move(signature), copts, device_index);
 
-    // Launch kernel with signature (for NPU backend to parse argument types)
+    // The cached kernel owns the miss-time rendered signature needed by NPU
+    // and launch hooks, so cache hits do not rebuild it.
     std::span<void*> ptrs = buffer.get_ptrs();
-    kernel.launch_with_signature(grid_x,
-                                 grid_y,
-                                 grid_z,
-                                 copts.num_warps,
-                                 stream,
-                                 ptrs.data(),
-                                 full_signature,
-                                 ptrs.size());
+    kernel.launch_cached(grid_x, grid_y, grid_z, copts.num_warps, stream, ptrs.data(), ptrs.size());
   }
 
   void launch_with_raw_args(typename Backend::StreamType stream,
@@ -549,15 +792,17 @@ class TritonJITFunctionImpl {
     CompileOptions copts;
     copts.num_warps = static_cast<int>(num_warps);
     copts.num_stages = static_cast<int>(num_stages);
-    const TritonKernelImpl<Backend>& kernel =
-        this->get_kernel(full_signature, copts, device_index);
+    const TritonKernelImpl<Backend>& kernel = this->get_kernel(full_signature, copts, device_index);
 
-    kernel.launch_with_signature(grid_x, grid_y, grid_z, num_warps, stream, args, full_signature, num_args);
+    kernel.launch_cached(grid_x, grid_y, grid_z, num_warps, stream, args, num_args);
   }
 
  private:
   TritonJITFunctionImpl(std::string_view path, std::string_view name);
   const TritonKernelImpl<Backend>& get_kernel(std::string_view signature,
+                                              const CompileOptions& opts,
+                                              int device_index) const;
+  const TritonKernelImpl<Backend>& get_kernel(detail::SignatureKey signature,
                                               const CompileOptions& opts,
                                               int device_index) const;
 };

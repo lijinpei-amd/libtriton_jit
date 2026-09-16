@@ -28,6 +28,7 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <utility>
 
 #include "triton_jit/backend_policy.h"
 #include "triton_jit/jit_utils.h"
@@ -88,6 +89,7 @@ class TritonKernelImpl {
     std::once_flag load_once;
     std::atomic<bool> loaded {false};
     typename Backend::KernelHandle kernel_handle {};
+    std::string signature;
   };
 
   std::string dir_;
@@ -106,6 +108,11 @@ class TritonKernelImpl {
         shared_memory_(Backend::get_shared_memory(dir_, kernel_name_)) {
   }
 
+  TritonKernelImpl(std::string_view dir, std::string_view kernel_name, std::string signature)
+      : TritonKernelImpl(dir, kernel_name) {
+    kernel_state_->signature = std::move(signature);
+  }
+
   // Delete copy constructor and assignment
   TritonKernelImpl(const TritonKernelImpl&) = delete;
   TritonKernelImpl& operator=(const TritonKernelImpl&) = delete;
@@ -114,16 +121,14 @@ class TritonKernelImpl {
   TritonKernelImpl(TritonKernelImpl&&) = default;
   TritonKernelImpl& operator=(TritonKernelImpl&&) = default;
 
-  /**
-   * @brief Launch kernel (convenience wrapper with empty signature)
-   */
+  /** @brief Backward-compatible convenience wrapper with an empty signature. */
   void launch(unsigned int grid_x,
               unsigned int grid_y,
               unsigned int grid_z,
               int num_warps,
               typename Backend::StreamType stream,
               void** args) const {
-    launch_with_signature(grid_x, grid_y, grid_z, num_warps, stream, args, "");
+    launch_impl(grid_x, grid_y, grid_z, num_warps, stream, args, "", 0);
   }
 
   /**
@@ -139,6 +144,44 @@ class TritonKernelImpl {
                              void** args,
                              const std::string& signature,
                              size_t num_args = 0) const {
+    launch_impl(grid_x, grid_y, grid_z, num_warps, stream, args, signature, num_args);
+  }
+
+  std::string_view signature() const noexcept {
+    return kernel_state_->signature;
+  }
+
+  const std::string& get_dir() const {
+    return dir_;
+  }
+
+  const std::string& get_kernel_name() const {
+    return kernel_name_;
+  }
+
+  bool is_loaded() const {
+    return kernel_state_->loaded.load(std::memory_order_acquire);
+  }
+
+ private:
+  void launch_cached(unsigned int grid_x,
+                     unsigned int grid_y,
+                     unsigned int grid_z,
+                     int num_warps,
+                     typename Backend::StreamType stream,
+                     void** args,
+                     size_t num_args) const {
+    launch_impl(grid_x, grid_y, grid_z, num_warps, stream, args, kernel_state_->signature, num_args);
+  }
+
+  void launch_impl(unsigned int grid_x,
+                   unsigned int grid_y,
+                   unsigned int grid_z,
+                   int num_warps,
+                   typename Backend::StreamType stream,
+                   void** args,
+                   const std::string& signature,
+                   size_t num_args) const {
     // Lazy initialization
     lazy_init_handle();
 
@@ -195,19 +238,6 @@ class TritonKernelImpl {
     }
   }
 
-  const std::string& get_dir() const {
-    return dir_;
-  }
-
-  const std::string& get_kernel_name() const {
-    return kernel_name_;
-  }
-
-  bool is_loaded() const {
-    return kernel_state_->loaded.load(std::memory_order_acquire);
-  }
-
- private:
   void lazy_init_handle() const {
     std::call_once(kernel_state_->load_once, [this]() {
       auto kernel_handle = Backend::load_kernel(dir_, kernel_name_);

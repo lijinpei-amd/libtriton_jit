@@ -25,7 +25,9 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <type_traits>
 
 namespace {
 
@@ -51,11 +53,17 @@ struct FakeBackend {
   using StreamType = void*;
   using ContextType = void*;
   using KernelHandle = int;
-  using LaunchOptions = int;
+
+  struct LaunchOptions {
+    std::string_view signature;
+    size_t num_args;
+  };
 
   inline static std::atomic<int> launch_count {0};
   inline static std::atomic<unsigned int> last_block_x {0};
   inline static std::atomic<bool> throw_on_launch {false};
+  inline static std::string last_signature;
+  inline static size_t last_num_args = 0;
 
   static void launch_kernel(StreamType,
                             KernelHandle,
@@ -66,8 +74,10 @@ struct FakeBackend {
                             unsigned,
                             unsigned,
                             void**,
-                            const LaunchOptions&) {
+                            const LaunchOptions& opts) {
     last_block_x = block_x;
+    last_signature = opts.signature;
+    last_num_args = opts.num_args;
     ++launch_count;
     if (throw_on_launch.load()) {
       throw std::runtime_error("backend launch failed");
@@ -93,24 +103,26 @@ struct FakeBackend {
     return 64;
   }
 
-  static LaunchOptions prepare_launch(const std::string&,
-                                      const std::string&,
-                                      unsigned int,
-                                      const std::string&,
-                                      size_t) {
-    return 0;
+  static LaunchOptions prepare_launch(
+      const std::string&, const std::string&, unsigned int, const std::string& signature, size_t num_args) {
+    return {.signature = signature, .num_args = num_args};
   }
 
   static void reset() {
     launch_count = 0;
     last_block_x = 0;
     throw_on_launch = false;
+    last_signature.clear();
+    last_num_args = 0;
   }
 };
 
 static_assert(triton_jit::BackendPolicy<FakeBackend>);
 
 using FakeKernel = triton_jit::TritonKernelImpl<FakeBackend>;
+using LegacyLaunchMember =
+    void (FakeKernel::*)(unsigned int, unsigned int, unsigned int, int, void*, void**) const;
+static_assert(std::is_same_v<decltype(&FakeKernel::launch), LegacyLaunchMember>);
 
 void test_setters_preserve_both_hooks() {
   HooksGuard guard;
@@ -169,7 +181,10 @@ void test_reentrant_clear_keeps_current_snapshot() {
   triton_jit::set_launch_exit_hook(
       [&](const triton_jit::LaunchMetadata&) { ++exit_count; });
 
-  FakeKernel kernel("unused", "fake_kernel");
+  std::string source_signature = "*fp32:16,i32";
+  FakeKernel kernel("unused", "fake_kernel", source_signature);
+  source_signature.assign("overwritten by caller");
+  REQUIRE(kernel.signature() == "*fp32:16,i32");
   kernel.launch_with_signature(2, 3, 4, 5, stream, nullptr, "*fp32:16,i32", 2);
 
   REQUIRE(enter_count == 1);
@@ -184,11 +199,52 @@ void test_reentrant_clear_keeps_current_snapshot() {
   REQUIRE(captured.shared_memory == 128);
   REQUIRE(captured.signature == "*fp32:16,i32");
   REQUIRE(captured.stream == stream);
+  REQUIRE(FakeBackend::last_signature == "*fp32:16,i32");
+  REQUIRE(FakeBackend::last_num_args == 2);
 
-  kernel.launch_with_signature(1, 1, 1, 1, stream, nullptr, "", 0);
+  kernel.launch_with_signature(1, 1, 1, 1, stream, nullptr, "*fp32:16,i32", 2);
   REQUIRE(enter_count == 1);
   REQUIRE(exit_count == 1);
   REQUIRE(FakeBackend::launch_count == 2);
+}
+
+void test_bound_kernel_keeps_legacy_signature_entry_point() {
+  HooksGuard guard;
+  FakeBackend::reset();
+  FakeKernel kernel("unused", "fake_kernel", "i32");
+
+  kernel.launch_with_signature(1, 1, 1, 1, nullptr, nullptr, "i64", 1);
+
+  REQUIRE(kernel.signature() == "i32");
+  REQUIRE(FakeBackend::launch_count == 1);
+  REQUIRE(FakeBackend::last_signature == "i64");
+  REQUIRE(FakeBackend::last_num_args == 1);
+}
+
+void test_unbound_kernel_keeps_legacy_signature_entry_point() {
+  HooksGuard guard;
+  FakeBackend::reset();
+  FakeKernel kernel("unused", "fake_kernel");
+
+  kernel.launch_with_signature(1, 1, 1, 1, nullptr, nullptr, "i64", 1);
+
+  REQUIRE(kernel.signature().empty());
+  REQUIRE(FakeBackend::launch_count == 1);
+  REQUIRE(FakeBackend::last_signature == "i64");
+  REQUIRE(FakeBackend::last_num_args == 1);
+}
+
+void test_bound_kernel_keeps_legacy_empty_signature_launch() {
+  HooksGuard guard;
+  FakeBackend::reset();
+  FakeKernel kernel("unused", "fake_kernel", "i32");
+
+  kernel.launch(1, 1, 1, 1, nullptr, nullptr);
+
+  REQUIRE(kernel.signature() == "i32");
+  REQUIRE(FakeBackend::launch_count == 1);
+  REQUIRE(FakeBackend::last_signature.empty());
+  REQUIRE(FakeBackend::last_num_args == 0);
 }
 
 void test_enter_exception_prevents_launch() {
@@ -264,6 +320,9 @@ int main() {
     test_clear_removes_snapshot();
     test_concurrent_setters_do_not_lose_updates();
     test_reentrant_clear_keeps_current_snapshot();
+    test_bound_kernel_keeps_legacy_signature_entry_point();
+    test_unbound_kernel_keeps_legacy_signature_entry_point();
+    test_bound_kernel_keeps_legacy_empty_signature_launch();
     test_enter_exception_prevents_launch();
     test_backend_exception_skips_exit();
     test_exit_exception_follows_launch();
