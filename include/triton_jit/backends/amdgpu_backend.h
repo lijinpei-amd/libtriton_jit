@@ -221,7 +221,9 @@ struct AmdgpuBackend {
   }
 
   static unsigned int get_shared_memory(const std::string& dir, const std::string& kernel_name) {
-    return get_loaded_metadata(dir, kernel_name).shared;
+    // TritonKernelImpl caches this value before lazy-loading the module, so it
+    // must be obtainable directly from the compiled kernel metadata.
+    return load_amdgpu_metadata(dir, kernel_name).shared;
   }
 
   static unsigned int get_warp_size(const std::string& dir, const std::string& kernel_name) {

@@ -3,6 +3,10 @@ add_executable(test_launch_hooks test_launch_hooks.cpp)
 target_link_libraries(test_launch_hooks PRIVATE TritonJIT::triton_jit)
 add_test(NAME launch_hooks COMMAND test_launch_hooks)
 
+add_executable(test_shared_memory_cache test_shared_memory_cache.cpp)
+target_link_libraries(test_shared_memory_cache PRIVATE TritonJIT::triton_jit)
+add_test(NAME shared_memory_cache COMMAND test_shared_memory_cache)
+
 add_executable(test_tuple_args test_tuple_args.cpp)
 target_link_libraries(test_tuple_args PRIVATE TritonJIT::triton_jit)
 

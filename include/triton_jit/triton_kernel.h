@@ -85,6 +85,7 @@ class TritonKernelImpl {
  private:
   std::string dir_;
   std::string kernel_name_;
+  unsigned int shared_memory_ = 0;
   mutable bool loaded_ = false;
   mutable typename Backend::KernelHandle kernel_handle_;
 
@@ -92,7 +93,10 @@ class TritonKernelImpl {
   TritonKernelImpl() = default;
 
   TritonKernelImpl(std::string_view dir, std::string_view kernel_name)
-      : dir_(std::string(dir)), kernel_name_(std::string(kernel_name)), loaded_(false) {
+      : dir_(std::string(dir)),
+        kernel_name_(std::string(kernel_name)),
+        shared_memory_(Backend::get_shared_memory(dir_, kernel_name_)),
+        loaded_(false) {
   }
 
   // Delete copy constructor and assignment
@@ -143,11 +147,8 @@ class TritonKernelImpl {
     unsigned int block_y = 1;
     unsigned int block_z = 1;
 
-    // Get shared memory size from backend
-    unsigned int shared_memory = Backend::get_shared_memory(dir_, kernel_name_);
-
     // Prepare backend-specific launch options (no branching)
-    auto opts = Backend::prepare_launch(dir_, kernel_name_, shared_memory, signature, num_args);
+    auto opts = Backend::prepare_launch(dir_, kernel_name_, shared_memory_, signature, num_args);
 
     // Take one immutable snapshot for the whole launch. Updating or clearing the
     // process-wide hooks from another thread (or from a hook itself) only affects
@@ -160,7 +161,7 @@ class TritonKernelImpl {
       metadata.grid_y = grid_y;
       metadata.grid_z = grid_z;
       metadata.num_warps = num_warps;
-      metadata.shared_memory = shared_memory;
+      metadata.shared_memory = shared_memory_;
       metadata.signature = signature;
       if constexpr (std::is_pointer_v<typename Backend::StreamType>) {
         metadata.stream = reinterpret_cast<void*>(stream);
