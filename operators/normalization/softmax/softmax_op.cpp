@@ -77,22 +77,24 @@ at::Tensor softmax(const at::Tensor& input, int64_t dim) {
   int64_t ONE_TILE_PER_CTA = (TILE_N >= n_cols) ? 1 : 0;
 
   c10::DeviceGuard guard(input.device());
+  const int device_index = input.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(x_flat);
 
-  f(stream,
-    n_rows,
-    1,
-    1,
-    cfg.num_warps,
-    cfg.num_stages,
-    output,
-    x_flat,  // output first, then input
-    n_rows,
-    n_cols,
-    x_flat.stride(0),
-    output.stride(0),
-    TILE_N,
-    ONE_TILE_PER_CTA);
+  f.launch_on_device(device_index,
+                     stream,
+                     n_rows,
+                     1,
+                     1,
+                     cfg.num_warps,
+                     cfg.num_stages,
+                     output,
+                     x_flat,  // output first, then input
+                     n_rows,
+                     n_cols,
+                     x_flat.stride(0),
+                     output.stride(0),
+                     TILE_N,
+                     ONE_TILE_PER_CTA);
 
   // Reshape and inverse permute
   output = output.view(x_permuted.sizes());

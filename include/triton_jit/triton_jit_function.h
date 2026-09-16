@@ -435,6 +435,23 @@ class TritonJITFunctionImpl {
     (*this)(stream, grid_x, grid_y, grid_z, copts, args...);
   }
 
+  // Fast path for callers that already made device_index current and obtained
+  // a stream for it. This avoids redundant backend context/device queries.
+  template <typename... Args>
+  void launch_on_device(int device_index,
+                        typename Backend::StreamType stream,
+                        unsigned int grid_x,
+                        unsigned int grid_y,
+                        unsigned int grid_z,
+                        unsigned int num_warps,
+                        unsigned int num_stages,
+                        Args... args) const {
+    CompileOptions copts;
+    copts.num_warps = static_cast<int>(num_warps);
+    copts.num_stages = static_cast<int>(num_stages);
+    launch_on_device(device_index, stream, grid_x, grid_y, grid_z, copts, args...);
+  }
+
   // Primary overload: CompileOptions carries num_warps/num_stages plus any extra
   // backend compiler switches (e.g. {"opt_level","O2"}). All of it feeds the cache key.
   template <typename... Args>
@@ -444,6 +461,19 @@ class TritonJITFunctionImpl {
                   unsigned int grid_z,
                   const CompileOptions& copts,
                   Args... args) const {
+    Backend::ensure_context();
+    const int device_index = Backend::get_device_index();
+    launch_on_device(device_index, stream, grid_x, grid_y, grid_z, copts, args...);
+  }
+
+  template <typename... Args>
+  void launch_on_device(int device_index,
+                        typename Backend::StreamType stream,
+                        unsigned int grid_x,
+                        unsigned int grid_y,
+                        unsigned int grid_z,
+                        const CompileOptions& copts,
+                        Args... args) const {
     const int num_args = this->static_sig_.num_args;
 
     // Storage for argument processing using ParameterBuffer
@@ -465,10 +495,6 @@ class TritonJITFunctionImpl {
     handler.append_global_scratch();
 #endif
     std::string full_signature = join_sig(signature);
-
-    // Backend-specific context setup
-    Backend::ensure_context();
-    int device_index = Backend::get_device_index();
 
     // Get or compile kernel
     const TritonKernelImpl<Backend>& kernel =
@@ -496,8 +522,30 @@ class TritonJITFunctionImpl {
                             void** args,
                             size_t num_args = 0) const {
     Backend::ensure_context();
-    int device_index = Backend::get_device_index();
+    const int device_index = Backend::get_device_index();
 
+    launch_with_raw_args_on_device(device_index,
+                                   stream,
+                                   grid_x,
+                                   grid_y,
+                                   grid_z,
+                                   num_warps,
+                                   num_stages,
+                                   std::move(full_signature),
+                                   args,
+                                   num_args);
+  }
+
+  void launch_with_raw_args_on_device(int device_index,
+                                      typename Backend::StreamType stream,
+                                      unsigned int grid_x,
+                                      unsigned int grid_y,
+                                      unsigned int grid_z,
+                                      unsigned int num_warps,
+                                      unsigned int num_stages,
+                                      std::string full_signature,
+                                      void** args,
+                                      size_t num_args = 0) const {
     CompileOptions copts;
     copts.num_warps = static_cast<int>(num_warps);
     copts.num_stages = static_cast<int>(num_stages);

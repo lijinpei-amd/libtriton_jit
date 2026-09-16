@@ -72,6 +72,7 @@ std::tuple<at::Tensor, at::Tensor> apply_rotary_pos_emb(const at::Tensor& q,
   constexpr auto cfg = triton_jit::ops::default_rotary_config();
 
   c10::DeviceGuard guard(q.device());
+  const int device_index = q.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(q);
 
   // Grid: (cdiv(num_tokens, BLOCK_N), cdiv(num_heads, BLOCK_H))
@@ -80,48 +81,50 @@ std::tuple<at::Tensor, at::Tensor> apply_rotary_pos_emb(const at::Tensor& q,
   auto grid_k_y = (num_heads_k + cfg.BLOCK_H - 1) / cfg.BLOCK_H;
 
   // Launch for Q
-  f(stream,
-    grid_q_x,
-    grid_q_y,
-    1,
-    cfg.num_warps,
-    cfg.num_stages,
-    q_out,
-    q_contig,
-    cos_expanded,
-    sin_expanded,
-    q_contig.stride(0),
-    q_contig.stride(1),
-    q_contig.stride(2),
-    cos_expanded.stride(0),
-    cos_expanded.stride(2),
-    num_tokens,
-    num_heads_q,
-    cfg.BLOCK_N,
-    cfg.BLOCK_H,
-    head_dim);
+  f.launch_on_device(device_index,
+                     stream,
+                     grid_q_x,
+                     grid_q_y,
+                     1,
+                     cfg.num_warps,
+                     cfg.num_stages,
+                     q_out,
+                     q_contig,
+                     cos_expanded,
+                     sin_expanded,
+                     q_contig.stride(0),
+                     q_contig.stride(1),
+                     q_contig.stride(2),
+                     cos_expanded.stride(0),
+                     cos_expanded.stride(2),
+                     num_tokens,
+                     num_heads_q,
+                     cfg.BLOCK_N,
+                     cfg.BLOCK_H,
+                     head_dim);
 
   // Launch for K
-  f(stream,
-    grid_q_x,
-    grid_k_y,
-    1,
-    cfg.num_warps,
-    cfg.num_stages,
-    k_out,
-    k_contig,
-    cos_expanded,
-    sin_expanded,
-    k_contig.stride(0),
-    k_contig.stride(1),
-    k_contig.stride(2),
-    cos_expanded.stride(0),
-    cos_expanded.stride(2),
-    num_tokens,
-    num_heads_k,
-    cfg.BLOCK_N,
-    cfg.BLOCK_H,
-    head_dim);
+  f.launch_on_device(device_index,
+                     stream,
+                     grid_q_x,
+                     grid_k_y,
+                     1,
+                     cfg.num_warps,
+                     cfg.num_stages,
+                     k_out,
+                     k_contig,
+                     cos_expanded,
+                     sin_expanded,
+                     k_contig.stride(0),
+                     k_contig.stride(1),
+                     k_contig.stride(2),
+                     cos_expanded.stride(0),
+                     cos_expanded.stride(2),
+                     num_tokens,
+                     num_heads_k,
+                     cfg.BLOCK_N,
+                     cfg.BLOCK_H,
+                     head_dim);
 
   return std::make_tuple(q_out, k_out);
 }

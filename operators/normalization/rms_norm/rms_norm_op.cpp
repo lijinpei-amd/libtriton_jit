@@ -52,22 +52,24 @@ at::Tensor rms_norm(const at::Tensor& input, const at::Tensor& weight, double ep
   constexpr int num_stages = 1;
 
   c10::DeviceGuard guard(input.device());
+  const int device_index = input.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(input);
 
-  f(stream,
-    n_rows,
-    1,
-    1,
-    num_warps,
-    num_stages,
-    x_flat,
-    weight,
-    output,
-    x_flat.stride(0),
-    output.stride(0),
-    hidden_size,
-    static_cast<float>(eps),
-    BLOCK_SIZE);
+  f.launch_on_device(device_index,
+                     stream,
+                     n_rows,
+                     1,
+                     1,
+                     num_warps,
+                     num_stages,
+                     x_flat,
+                     weight,
+                     output,
+                     x_flat.stride(0),
+                     output.stride(0),
+                     hidden_size,
+                     static_cast<float>(eps),
+                     BLOCK_SIZE);
 
   return output.view(orig_shape);
 }

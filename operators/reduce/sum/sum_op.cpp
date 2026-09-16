@@ -103,20 +103,22 @@ at::Tensor sum_dim(const at::Tensor& self,
 
   // ------------------------- Kernel Launch ---------------------------------
   c10::DeviceGuard guard(out.device());
+  const int device_index = out.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(permuted_self);
 
-  f(stream,
-    num_blocks,
-    1,
-    1,
-    cfg.num_warps,
-    cfg.num_stages,
-    permuted_self,
-    out,
-    non_reduction_size,
-    reduction_size,
-    cfg.BLOCK_M,
-    cfg.BLOCK_N);
+  f.launch_on_device(device_index,
+                     stream,
+                     num_blocks,
+                     1,
+                     1,
+                     cfg.num_warps,
+                     cfg.num_stages,
+                     permuted_self,
+                     out,
+                     non_reduction_size,
+                     reduction_size,
+                     cfg.BLOCK_M,
+                     cfg.BLOCK_N);
   return out;
 }
 

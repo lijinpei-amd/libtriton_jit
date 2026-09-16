@@ -51,11 +51,22 @@ at::Tensor fill_tensor(const at::Tensor& input, double value) {
 
   // Kernel launch
   c10::DeviceGuard guard(out.device());
+  const int device_index = out.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(input);
 
   // Convert value to appropriate type
   float float_value = static_cast<float>(value);
-  f(stream, num_blocks, 1, 1, cfg.num_warps, cfg.num_stages, out, float_value, n, cfg.tile_size);
+  f.launch_on_device(device_index,
+                     stream,
+                     num_blocks,
+                     1,
+                     1,
+                     cfg.num_warps,
+                     cfg.num_stages,
+                     out,
+                     float_value,
+                     n,
+                     cfg.tile_size);
 
   return out;
 }
@@ -71,10 +82,21 @@ at::Tensor& fill_tensor_(at::Tensor& input, double value) {
 
   // Kernel launch
   c10::DeviceGuard guard(input.device());
+  const int device_index = input.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(input);
 
   float float_value = static_cast<float>(value);
-  f(stream, num_blocks, 1, 1, cfg.num_warps, cfg.num_stages, input, float_value, n, cfg.tile_size);
+  f.launch_on_device(device_index,
+                     stream,
+                     num_blocks,
+                     1,
+                     1,
+                     cfg.num_warps,
+                     cfg.num_stages,
+                     input,
+                     float_value,
+                     n,
+                     cfg.tile_size);
 
   return input;
 }

@@ -61,10 +61,22 @@ at::Tensor add_tensor(const at::Tensor& a_, const at::Tensor& b_) {
 
   // ------------------------- Kernel Launch ---------------------------------
   c10::DeviceGuard guard(out.device());
+  const int device_index = out.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(a);
 
   // Launch kernel
-  f(stream, num_blocks, 1, 1, cfg.num_warps, cfg.num_stages, a, b, out, n, cfg.tile_size);
+  f.launch_on_device(device_index,
+                     stream,
+                     num_blocks,
+                     1,
+                     1,
+                     cfg.num_warps,
+                     cfg.num_stages,
+                     a,
+                     b,
+                     out,
+                     n,
+                     cfg.tile_size);
 
   return out;
 }

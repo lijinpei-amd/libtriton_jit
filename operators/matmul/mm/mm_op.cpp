@@ -55,30 +55,32 @@ at::Tensor mm(const at::Tensor& a, const at::Tensor& b) {
   unsigned int num_blocks = grid_m * grid_n;
 
   c10::DeviceGuard guard(a.device());
+  const int device_index = a.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(a);
 
-  f(stream,
-    num_blocks,
-    1,
-    1,
-    cfg.num_warps,
-    cfg.num_stages,
-    a_contig,
-    b_contig,
-    c,
-    M,
-    N,
-    K,
-    a_contig.stride(0),
-    a_contig.stride(1),
-    b_contig.stride(0),
-    b_contig.stride(1),
-    c.stride(0),
-    c.stride(1),
-    cfg.BLOCK_M,
-    cfg.BLOCK_N,
-    cfg.BLOCK_K,
-    cfg.GROUP_M);
+  f.launch_on_device(device_index,
+                     stream,
+                     num_blocks,
+                     1,
+                     1,
+                     cfg.num_warps,
+                     cfg.num_stages,
+                     a_contig,
+                     b_contig,
+                     c,
+                     M,
+                     N,
+                     K,
+                     a_contig.stride(0),
+                     a_contig.stride(1),
+                     b_contig.stride(0),
+                     b_contig.stride(1),
+                     c.stride(0),
+                     c.stride(1),
+                     cfg.BLOCK_M,
+                     cfg.BLOCK_N,
+                     cfg.BLOCK_K,
+                     cfg.GROUP_M);
 
   return c;
 }

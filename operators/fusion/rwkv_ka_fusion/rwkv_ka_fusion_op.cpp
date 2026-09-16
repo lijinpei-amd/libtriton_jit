@@ -55,6 +55,7 @@ at::Tensor rwkv_ka_fusion(const at::Tensor& k, const at::Tensor& a) {
   constexpr int num_stages = 1;
 
   c10::DeviceGuard guard(k.device());
+  const int device_index = k.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(k);
 
   // GCU: grid.y limit is 255, swap grid dims so seq_len uses grid.x (limit 65535)
@@ -68,36 +69,50 @@ at::Tensor rwkv_ka_fusion(const at::Tensor& k, const at::Tensor& a) {
     grid_y = static_cast<unsigned int>(batch_size);
     const TritonJITFunction& f_swap =
         TritonJITFunction::get_instance(std::string("rwkv_ka_fusion.py"), "rwkv_ka_fusion_kernel_swapped");
-    f_swap(stream,
-      grid_x, grid_y, 1,
-      num_warps, num_stages,
-      k_contig, a_contig, output,
-      batch_size, seq_len, hidden_dim,
-      k_contig.stride(0), k_contig.stride(1),
-      a_contig.stride(0), a_contig.stride(1),
-      output.stride(0), output.stride(1),
-      BLOCK_SIZE);
+    f_swap.launch_on_device(device_index,
+                            stream,
+                            grid_x,
+                            grid_y,
+                            1,
+                            num_warps,
+                            num_stages,
+                            k_contig,
+                            a_contig,
+                            output,
+                            batch_size,
+                            seq_len,
+                            hidden_dim,
+                            k_contig.stride(0),
+                            k_contig.stride(1),
+                            a_contig.stride(0),
+                            a_contig.stride(1),
+                            output.stride(0),
+                            output.stride(1),
+                            BLOCK_SIZE);
     return output;
   }
 #endif
 
-  f(stream,
-    grid_x, grid_y, 1,
-    num_warps,
-    num_stages,
-    k_contig,
-    a_contig,
-    output,
-    batch_size,
-    seq_len,
-    hidden_dim,
-    k_contig.stride(0),
-    k_contig.stride(1),
-    a_contig.stride(0),
-    a_contig.stride(1),
-    output.stride(0),
-    output.stride(1),
-    BLOCK_SIZE);
+  f.launch_on_device(device_index,
+                     stream,
+                     grid_x,
+                     grid_y,
+                     1,
+                     num_warps,
+                     num_stages,
+                     k_contig,
+                     a_contig,
+                     output,
+                     batch_size,
+                     seq_len,
+                     hidden_dim,
+                     k_contig.stride(0),
+                     k_contig.stride(1),
+                     a_contig.stride(0),
+                     a_contig.stride(1),
+                     output.stride(0),
+                     output.stride(1),
+                     BLOCK_SIZE);
 
   return output;
 }

@@ -60,31 +60,33 @@ void reshape_and_cache_flash(const at::Tensor& key,
   constexpr int num_stages = 1;
 
   c10::DeviceGuard guard(key.device());
+  const int device_index = key.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(key);
 
-  f(stream,
-    num_tokens,
-    num_heads,
-    1,
-    num_warps,
-    num_stages,
-    key_contig,
-    value_contig,
-    key_cache,
-    value_cache,
-    slot_mapping_contig,
-    num_tokens,
-    num_heads,
-    head_dim,
-    block_size,
-    key_contig.stride(0),
-    key_contig.stride(1),
-    value_contig.stride(0),
-    value_contig.stride(1),
-    key_cache.stride(0),
-    key_cache.stride(1),
-    key_cache.stride(2),
-    BLOCK_SIZE);
+  f.launch_on_device(device_index,
+                     stream,
+                     num_tokens,
+                     num_heads,
+                     1,
+                     num_warps,
+                     num_stages,
+                     key_contig,
+                     value_contig,
+                     key_cache,
+                     value_cache,
+                     slot_mapping_contig,
+                     num_tokens,
+                     num_heads,
+                     head_dim,
+                     block_size,
+                     key_contig.stride(0),
+                     key_contig.stride(1),
+                     value_contig.stride(0),
+                     value_contig.stride(1),
+                     key_cache.stride(0),
+                     key_cache.stride(1),
+                     key_cache.stride(2),
+                     BLOCK_SIZE);
 }
 
 TORCH_LIBRARY(reshape_and_cache_flash_ops, m) {

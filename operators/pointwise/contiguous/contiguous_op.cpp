@@ -42,6 +42,7 @@ at::Tensor contiguous(const at::Tensor& input) {
   at::Tensor out = triton_jit::ops::backend_empty(input.sizes(), input.scalar_type(), input.device());
 
   c10::DeviceGuard guard(input.device());
+  const int device_index = input.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(input);
 
   if (input.dim() == 1 || input.numel() == 0) {
@@ -54,16 +55,17 @@ at::Tensor contiguous(const at::Tensor& input) {
     const int64_t n = input.numel();
     const unsigned int num_blocks = (n + cfg.tile_size - 1) / cfg.tile_size;
 
-    f(stream,
-      num_blocks,
-      1,
-      1,
-      cfg.num_warps,
-      cfg.num_stages,
-      input.flatten(),
-      out.flatten(),
-      n,
-      cfg.tile_size);
+    f.launch_on_device(device_index,
+                       stream,
+                       num_blocks,
+                       1,
+                       1,
+                       cfg.num_warps,
+                       cfg.num_stages,
+                       input.flatten(),
+                       out.flatten(),
+                       n,
+                       cfg.tile_size);
   } else {
     // Multi-dimensional case: use 2D strided kernel
     const TritonJITFunction& f =
@@ -84,22 +86,23 @@ at::Tensor contiguous(const at::Tensor& input) {
     const unsigned int grid_m = (n_rows + BLOCK_M - 1) / BLOCK_M;
     const unsigned int grid_n = (n_cols + BLOCK_N - 1) / BLOCK_N;
 
-    f(stream,
-      grid_m,
-      grid_n,
-      1,
-      num_warps,
-      num_stages,
-      input_2d,
-      out_2d,
-      n_rows,
-      n_cols,
-      input_2d.stride(0),
-      input_2d.stride(1),
-      out_2d.stride(0),
-      out_2d.stride(1),
-      BLOCK_M,
-      BLOCK_N);
+    f.launch_on_device(device_index,
+                       stream,
+                       grid_m,
+                       grid_n,
+                       1,
+                       num_warps,
+                       num_stages,
+                       input_2d,
+                       out_2d,
+                       n_rows,
+                       n_cols,
+                       input_2d.stride(0),
+                       input_2d.stride(1),
+                       out_2d.stride(0),
+                       out_2d.stride(1),
+                       BLOCK_M,
+                       BLOCK_N);
   }
 
   return out;

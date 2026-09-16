@@ -59,27 +59,29 @@ std::tuple<at::Tensor, at::Tensor> fused_add_rms_norm(const at::Tensor& input,
   }
 
   c10::DeviceGuard guard(input.device());
+  const int device_index = input.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(input);
 
   // Kernel signature:
   // fused_add_rms_norm_kernel(X, R, W, x_stride_r, x_stride_c, r_stride_r, r_stride_c, N, eps, BLOCK_SIZE)
   // The kernel modifies X and R in-place
-  f(stream,
-    n_rows,
-    1,
-    1,
-    cfg.num_warps,
-    cfg.num_stages,
-    x_flat,                   // X: input (modified in-place)
-    res_flat,                 // R: residual (modified in-place)
-    weight,                   // W: weight
-    x_flat.stride(0),         // x_stride_r
-    x_flat.stride(1),         // x_stride_c
-    res_flat.stride(0),       // r_stride_r
-    res_flat.stride(1),       // r_stride_c
-    hidden_size,              // N
-    static_cast<float>(eps),  // eps
-    BLOCK_SIZE);              // BLOCK_SIZE (constexpr)
+  f.launch_on_device(device_index,
+                     stream,
+                     n_rows,
+                     1,
+                     1,
+                     cfg.num_warps,
+                     cfg.num_stages,
+                     x_flat,                   // X: input (modified in-place)
+                     res_flat,                 // R: residual (modified in-place)
+                     weight,                   // W: weight
+                     x_flat.stride(0),         // x_stride_r
+                     x_flat.stride(1),         // x_stride_c
+                     res_flat.stride(0),       // r_stride_r
+                     res_flat.stride(1),       // r_stride_c
+                     hidden_size,              // N
+                     static_cast<float>(eps),  // eps
+                     BLOCK_SIZE);              // BLOCK_SIZE (constexpr)
 
   return std::make_tuple(x_flat.view(orig_shape), res_flat.view(orig_shape));
 }

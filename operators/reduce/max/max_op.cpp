@@ -69,21 +69,23 @@ std::tuple<at::Tensor, at::Tensor> max_dim(const at::Tensor& self, int64_t dim, 
   const unsigned int num_blocks = (M + BLOCK_M - 1) / BLOCK_M;
 
   c10::DeviceGuard guard(self.device());
+  const int device_index = self.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(permuted);
 
-  f(stream,
-    num_blocks,
-    1,
-    1,
-    num_warps,
-    num_stages,
-    permuted.view({M, N}),
-    out_vals,
-    out_idx,
-    M,
-    N,
-    BLOCK_M,
-    BLOCK_N);
+  f.launch_on_device(device_index,
+                     stream,
+                     num_blocks,
+                     1,
+                     1,
+                     num_warps,
+                     num_stages,
+                     permuted.view({M, N}),
+                     out_vals,
+                     out_idx,
+                     M,
+                     N,
+                     BLOCK_M,
+                     BLOCK_N);
 
   // Reshape output - out_shape is already in correct order (original dims except reduced)
   if (!out_shape.empty()) {

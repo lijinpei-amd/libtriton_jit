@@ -58,10 +58,22 @@ at::Tensor& exponential_(at::Tensor& input, double lambd) {
   const unsigned int num_blocks = (n + cfg.tile_size - 1) / cfg.tile_size;
 
   c10::DeviceGuard guard(input.device());
+  const int device_index = input.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(input);
 
   float float_lambd = static_cast<float>(lambd);
-  f(stream, num_blocks, 1, 1, cfg.num_warps, cfg.num_stages, input, input, float_lambd, n, cfg.tile_size);
+  f.launch_on_device(device_index,
+                     stream,
+                     num_blocks,
+                     1,
+                     1,
+                     cfg.num_warps,
+                     cfg.num_stages,
+                     input,
+                     input,
+                     float_lambd,
+                     n,
+                     cfg.tile_size);
 
   return input;
 }

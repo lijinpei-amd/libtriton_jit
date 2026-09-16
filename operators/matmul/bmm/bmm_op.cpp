@@ -62,33 +62,35 @@ at::Tensor bmm(const at::Tensor& a, const at::Tensor& b) {
   unsigned int grid_y = B;
 
   c10::DeviceGuard guard(a.device());
+  const int device_index = a.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(a);
 
-  f(stream,
-    grid_x,
-    grid_y,
-    1,
-    num_warps,
-    num_stages,
-    a_contig,
-    b_contig,
-    c,
-    B,
-    M,
-    N,
-    K,
-    a_contig.stride(0),
-    a_contig.stride(1),
-    a_contig.stride(2),
-    b_contig.stride(0),
-    b_contig.stride(1),
-    b_contig.stride(2),
-    c.stride(0),
-    c.stride(1),
-    c.stride(2),
-    BLOCK_M,
-    BLOCK_N,
-    BLOCK_K);
+  f.launch_on_device(device_index,
+                     stream,
+                     grid_x,
+                     grid_y,
+                     1,
+                     num_warps,
+                     num_stages,
+                     a_contig,
+                     b_contig,
+                     c,
+                     B,
+                     M,
+                     N,
+                     K,
+                     a_contig.stride(0),
+                     a_contig.stride(1),
+                     a_contig.stride(2),
+                     b_contig.stride(0),
+                     b_contig.stride(1),
+                     b_contig.stride(2),
+                     c.stride(0),
+                     c.stride(1),
+                     c.stride(2),
+                     BLOCK_M,
+                     BLOCK_N,
+                     BLOCK_K);
 
   return c;
 }

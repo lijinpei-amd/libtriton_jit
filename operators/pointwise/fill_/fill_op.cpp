@@ -45,9 +45,20 @@ at::Tensor& fill_(at::Tensor& tensor, const at::Scalar& value) {
   int64_t num_blocks = (n_elements + cfg.tile_size - 1) / cfg.tile_size;
 
   c10::DeviceGuard guard(tensor.device());
+  const int device_index = tensor.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(tensor);
 
-  f(stream, num_blocks, 1, 1, cfg.num_warps, cfg.num_stages, tensor, fill_value, n_elements, cfg.tile_size);
+  f.launch_on_device(device_index,
+                     stream,
+                     num_blocks,
+                     1,
+                     1,
+                     cfg.num_warps,
+                     cfg.num_stages,
+                     tensor,
+                     fill_value,
+                     n_elements,
+                     cfg.tile_size);
 
   return tensor;
 }

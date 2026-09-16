@@ -46,9 +46,19 @@ at::Tensor zeros_like(const at::Tensor& input) {
   const unsigned int num_blocks = (n + cfg.tile_size - 1) / cfg.tile_size;
 
   c10::DeviceGuard guard(out.device());
+  const int device_index = out.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(input);
 
-  f(stream, num_blocks, 1, 1, cfg.num_warps, cfg.num_stages, out, n, cfg.tile_size);
+  f.launch_on_device(device_index,
+                     stream,
+                     num_blocks,
+                     1,
+                     1,
+                     cfg.num_warps,
+                     cfg.num_stages,
+                     out,
+                     n,
+                     cfg.tile_size);
 
   return out;
 }
@@ -65,9 +75,19 @@ at::Tensor zeros(at::IntArrayRef size, at::ScalarType dtype, const at::Device& d
   const unsigned int num_blocks = (n + cfg.tile_size - 1) / cfg.tile_size;
 
   c10::DeviceGuard guard(out.device());
+  const int device_index = out.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(out);
 
-  f(stream, num_blocks, 1, 1, cfg.num_warps, cfg.num_stages, out, n, cfg.tile_size);
+  f.launch_on_device(device_index,
+                     stream,
+                     num_blocks,
+                     1,
+                     1,
+                     cfg.num_warps,
+                     cfg.num_stages,
+                     out,
+                     n,
+                     cfg.tile_size);
 
   return out;
 }

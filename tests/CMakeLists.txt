@@ -15,6 +15,10 @@ add_executable(test_parameter_buffer test_parameter_buffer.cpp)
 target_link_libraries(test_parameter_buffer PRIVATE TritonJIT::triton_jit)
 add_test(NAME parameter_buffer COMMAND test_parameter_buffer)
 
+add_executable(test_explicit_device_launch test_explicit_device_launch.cpp)
+target_link_libraries(test_explicit_device_launch PRIVATE TritonJIT::triton_jit)
+add_test(NAME explicit_device_launch COMMAND test_explicit_device_launch)
+
 add_executable(test_tuple_args test_tuple_args.cpp)
 target_link_libraries(test_tuple_args PRIVATE TritonJIT::triton_jit)
 

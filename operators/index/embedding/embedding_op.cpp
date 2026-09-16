@@ -56,23 +56,25 @@ at::Tensor embedding(const at::Tensor& indices, const at::Tensor& weight) {
   constexpr auto cfg = triton_jit::ops::default_basic_config();
 
   c10::DeviceGuard guard(weight.device());
+  const int device_index = weight.device().index();
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(weight);
 
-  f(stream,
-    num_indices,
-    1,
-    1,
-    cfg.num_warps,
-    cfg.num_stages,
-    indices_flat,
-    weight,
-    output,
-    num_embeddings,
-    embedding_dim,
-    int64_t(1),
-    weight.stride(0),
-    output.stride(0),
-    BLOCK_SIZE);
+  f.launch_on_device(device_index,
+                     stream,
+                     num_indices,
+                     1,
+                     1,
+                     cfg.num_warps,
+                     cfg.num_stages,
+                     indices_flat,
+                     weight,
+                     output,
+                     num_embeddings,
+                     embedding_dim,
+                     int64_t(1),
+                     weight.stride(0),
+                     output.stride(0),
+                     BLOCK_SIZE);
 
   return output.view(orig_shape);
 }
