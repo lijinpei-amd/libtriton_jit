@@ -26,6 +26,7 @@
 #include "test_framework.h"
 #include <iomanip>
 #include <sstream>
+#include <stdexcept>
 
 namespace triton_jit {
 namespace test {
@@ -48,7 +49,18 @@ namespace test {
 
     device_id_ = device_id;
 
-#if defined(BACKEND_NPU)
+#if defined(BACKEND_AMDGPU)
+    hipError_t err = amdgpu::Runtime::set_device(device_id_);
+    if (err != hipSuccess) {
+      std::cerr << "Failed to set AMDGPU device: " << amdgpu::Runtime::get_error_string(err)
+                << std::endl;
+      return -1;
+    }
+
+    device_ = at::Device(at::DeviceType::CUDA, device_id_);
+    std::cout << "AMDGPU device " << device_id_ << " initialized" << std::endl;
+
+#elif defined(BACKEND_NPU)
     // Initialize NPU
     auto ret = aclInit(nullptr);
     if (ret != ACL_SUCCESS) {
@@ -173,7 +185,13 @@ namespace test {
   void DeviceManager::synchronize() {
     if (!initialized_) return;
 
-#if defined(BACKEND_NPU)
+#if defined(BACKEND_AMDGPU)
+    hipError_t err = amdgpu::Runtime::device_synchronize();
+    if (err != hipSuccess) {
+      throw std::runtime_error(std::string("Failed to synchronize AMDGPU device: ") +
+                               amdgpu::Runtime::get_error_string(err));
+    }
+#elif defined(BACKEND_NPU)
     aclrtSynchronizeDevice();
 #elif defined(BACKEND_MUSA)
     musaDeviceSynchronize();
@@ -189,7 +207,9 @@ namespace test {
   }
 
   std::string DeviceManager::get_backend_name() const {
-#if defined(BACKEND_NPU)
+#if defined(BACKEND_AMDGPU)
+    return "AMDGPU";
+#elif defined(BACKEND_NPU)
     return "NPU";
 #elif defined(BACKEND_MUSA)
     return "MUSA";
@@ -209,7 +229,10 @@ namespace test {
   void DeviceManager::cleanup() {
     if (!initialized_) return;
 
-#if defined(BACKEND_NPU)
+#if defined(BACKEND_AMDGPU)
+    // PyTorch owns the process-wide HIP context. Resetting it while PyTorch
+    // still has live allocator and stream state can crash during shutdown.
+#elif defined(BACKEND_NPU)
     aclrtResetDevice(device_id_);
     aclFinalize();
 #elif defined(BACKEND_MUSA)

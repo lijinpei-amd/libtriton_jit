@@ -49,3 +49,9 @@ add_test(
         ${PROJECT_SOURCE_DIR}/scripts/standalone_compile.py
         ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/equal_to_one_module.py
 )
+
+if(BACKEND STREQUAL "AMDGPU")
+    add_executable(test_amdgpu_metadata test_amdgpu_metadata.cpp)
+    target_link_libraries(test_amdgpu_metadata PRIVATE TritonJIT::triton_jit)
+    add_test(NAME amdgpu_metadata COMMAND test_amdgpu_metadata)
+endif()

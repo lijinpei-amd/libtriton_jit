@@ -39,7 +39,11 @@
 #include <vector>
 
 // Backend-specific includes
-#if defined(BACKEND_NPU)
+#if defined(BACKEND_AMDGPU)
+#include <hip/hip_runtime.h>
+#include "triton_jit/backends/amdgpu_runtime.h"
+#define DEVICE_TYPE at::DeviceType::CUDA
+#elif defined(BACKEND_NPU)
 #include <acl/acl.h>
 #include <torch_npu/csrc/core/npu/NPUStream.h>
 #include <torch_npu/csrc/framework/utils/OpAdapter.h>

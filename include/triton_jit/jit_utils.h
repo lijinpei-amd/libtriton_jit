@@ -34,7 +34,10 @@
 #include "c10/util/Logging.h"  // use torch's logging
 #include "torch/torch.h"
 
-#ifdef BACKEND_NPU
+#ifdef BACKEND_AMDGPU
+#include <hip/hip_runtime.h>
+#include "triton_jit/backends/amdgpu_runtime.h"
+#elif defined(BACKEND_NPU)
 #include "acl/acl.h"
 #elif defined(BACKEND_MUSA)
 #include <musa.h>
@@ -232,7 +235,22 @@ constexpr const char* narrow_type_name(const T& v) {
 // path of python executable
 std::filesystem::path get_script_dir();
 
-#ifdef BACKEND_NPU
+#ifdef BACKEND_AMDGPU
+#define checkAmdgpuErrors(err) __checkAmdgpuErrors(err, __FILE__, __LINE__)
+
+inline void __checkAmdgpuErrors(hipError_t code, const char* file, const int line) {
+  if (code != hipSuccess) {
+    const char* error_string = amdgpu::Runtime::get_error_string(code);
+    fprintf(stderr,
+            "AMDGPU HIP Runtime API error = %04d from file <%s>, line %i. Detail: <%s>\n",
+            static_cast<int>(code),
+            file,
+            line,
+            error_string ? error_string : "Unknown HIP error");
+    throw std::runtime_error(error_string ? error_string : "Unknown HIP error");
+  }
+}
+#elif defined(BACKEND_NPU)
 // ACL error checking function
 inline void checkAclErrors(aclError code, const char* message = "") {
   if (code != ACL_ERROR_NONE) {

@@ -26,9 +26,44 @@ set(TritonJIT_BACKEND "@BACKEND@")
 # Leave Public Dependency Resolution Later
 include(CMakeFindDependencyMacro)
 
+# PyTorch's ROCm discovery consumes ROCM_PATH while Torch is being found. Give
+# consumers the same AMDGPU_ROOT override as the source build and establish it
+# before resolving either HIP or Torch.
+if(TritonJIT_BACKEND STREQUAL "AMDGPU")
+    set(AMDGPU_ROOT "" CACHE PATH "ROCm installation root for the AMDGPU backend")
+    if(NOT AMDGPU_ROOT)
+        if(DEFINED ENV{ROCM_PATH} AND NOT "$ENV{ROCM_PATH}" STREQUAL "")
+            set(AMDGPU_ROOT "$ENV{ROCM_PATH}")
+        elseif(DEFINED ENV{HIP_PATH} AND NOT "$ENV{HIP_PATH}" STREQUAL "")
+            set(AMDGPU_ROOT "$ENV{HIP_PATH}")
+        elseif(IS_DIRECTORY "@AMDGPU_ROOT@")
+            set(AMDGPU_ROOT "@AMDGPU_ROOT@")
+        elseif(IS_DIRECTORY "/opt/rocm")
+            set(AMDGPU_ROOT "/opt/rocm")
+        endif()
+    endif()
+
+    if(NOT AMDGPU_ROOT OR NOT IS_DIRECTORY "${AMDGPU_ROOT}")
+        message(FATAL_ERROR
+            "A valid ROCm installation is required by this AMDGPU TritonJIT package. "
+            "Set AMDGPU_ROOT to the ROCm installation root.")
+    endif()
+
+    file(REAL_PATH "${AMDGPU_ROOT}" AMDGPU_ROOT)
+    set(AMDGPU_ROOT "${AMDGPU_ROOT}" CACHE PATH
+        "ROCm installation root for the AMDGPU backend" FORCE)
+    set(ENV{ROCM_PATH} "${AMDGPU_ROOT}")
+    list(PREPEND CMAKE_PREFIX_PATH "${AMDGPU_ROOT}" "${AMDGPU_ROOT}/hip")
+    message(STATUS "TritonJIT AMDGPU_ROOT: ${AMDGPU_ROOT}")
+endif()
+
 # Backend-specific dependencies
 if(TritonJIT_BACKEND STREQUAL "CUDA" OR TritonJIT_BACKEND STREQUAL "IX")
     find_dependency(CUDAToolkit REQUIRED)
+elseif(TritonJIT_BACKEND STREQUAL "AMDGPU")
+    find_dependency(hip CONFIG REQUIRED
+        PATHS "${AMDGPU_ROOT}" "${AMDGPU_ROOT}/lib/cmake/hip"
+        NO_DEFAULT_PATH)
 elseif(TritonJIT_BACKEND STREQUAL "NPU")
     # Create Ascend imported targets for downstream projects
     set(_ASCEND_TOOLKIT_HOME $ENV{ASCEND_TOOLKIT_HOME})
@@ -81,6 +116,41 @@ endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}")
 find_dependency(Torch MODULE REQUIRED)
+
+if(TritonJIT_BACKEND STREQUAL "AMDGPU")
+    execute_process(
+        COMMAND ${Python_EXECUTABLE} -c
+                "import torch; value = torch.version.hip; print(value if value is not None else '')"
+        RESULT_VARIABLE _TRITON_JIT_TORCH_HIP_CHECK_RESULT
+        OUTPUT_VARIABLE _TRITON_JIT_TORCH_HIP_VERSION
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_VARIABLE _TRITON_JIT_TORCH_HIP_CHECK_ERROR)
+    if(NOT _TRITON_JIT_TORCH_HIP_CHECK_RESULT EQUAL 0 OR
+       _TRITON_JIT_TORCH_HIP_VERSION STREQUAL "")
+        message(FATAL_ERROR
+            "The AMDGPU TritonJIT package requires ROCm-enabled PyTorch. "
+            "${_TRITON_JIT_TORCH_HIP_CHECK_ERROR}")
+    endif()
+
+    string(REGEX MATCH "^[0-9]+\\.[0-9]+" _TRITON_JIT_ROCM_MAJOR_MINOR "${hip_VERSION}")
+    string(REGEX MATCH "^[0-9]+\\.[0-9]+" _TRITON_JIT_TORCH_MAJOR_MINOR
+           "${_TRITON_JIT_TORCH_HIP_VERSION}")
+    if(NOT _TRITON_JIT_ROCM_MAJOR_MINOR OR NOT _TRITON_JIT_TORCH_MAJOR_MINOR OR
+       NOT _TRITON_JIT_ROCM_MAJOR_MINOR VERSION_EQUAL _TRITON_JIT_TORCH_MAJOR_MINOR)
+        message(FATAL_ERROR
+            "AMDGPU_ROOT provides ROCm HIP ${hip_VERSION}, but PyTorch was built for HIP "
+            "${_TRITON_JIT_TORCH_HIP_VERSION}. Select a matching ROCm installation.")
+    endif()
+endif()
+
+if(TritonJIT_BACKEND STREQUAL "AMDGPU" AND NOT TARGET TritonJIT::amdgpu_host_api)
+    add_library(TritonJIT::amdgpu_host_api INTERFACE IMPORTED)
+    set_target_properties(TritonJIT::amdgpu_host_api PROPERTIES
+        INTERFACE_COMPILE_DEFINITIONS "__HIP_PLATFORM_AMD__=1"
+        INTERFACE_COMPILE_FEATURES "cxx_std_20"
+        INTERFACE_INCLUDE_DIRECTORIES "${hip_INCLUDE_DIRS}"
+        INTERFACE_LINK_LIBRARIES "${CMAKE_DL_LIBS}")
+endif()
 
 find_dependency(fmt)
 if (NOT TARGET fmt::fmt)

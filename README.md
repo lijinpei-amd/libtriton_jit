@@ -14,6 +14,7 @@ You can define JIT functions in Python scripts and then invoke them in C++ code.
 It supports multiple hardware backends through a compile-time backend policy design (C++20 concepts):
 
 - **CUDA**: NVIDIA GPUs (warp size 32)
+- **AMDGPU**: AMD GPUs through ROCm/HIP (wave32 or wave64, selected from Triton metadata)
 - **MUSA**: Moore Threads GPUs (warp size 32)
 - **NPU**: Ascend/Huawei (ACL API)
 - **IX**: Tianshu GPUs (warp size 64)
@@ -217,6 +218,11 @@ Remember to specify which Python root to use, since the Python root is used to f
 # CUDA (default)
 cmake -S . -B build/ -DPython_ROOT="$(which python)/../.." -DBACKEND=CUDA
 
+# AMDGPU (AMD ROCm)
+# Use a ROCm-enabled PyTorch installation and its matching Triton package.
+cmake -S . -B build/ -DPython_ROOT="$(which python)/../.." -DBACKEND=AMDGPU
+# For a non-default ROCm installation, also pass -DAMDGPU_ROOT=/path/to/rocm.
+
 # NPU (Ascend)
 cmake -S . -B build/ -DPython_ROOT="$(which python)/../.." -DBACKEND=NPU
 
@@ -283,7 +289,7 @@ For example, `export TORCH_CPP_LOG_LEVEL=INFO`.
 
 ## Roadmap
 
-- ~~Support more backends~~ ✓ (CUDA, MUSA, NPU, IX, MACA, MLU, GCU, HCU supported)
+- ~~Support more backends~~ ✓ (CUDA, AMDGPU, MUSA, NPU, IX, MACA, MLU, GCU, HCU supported)
 - Better argument processing
 
   - copy arguments to a buffer to ensure their lifetime;

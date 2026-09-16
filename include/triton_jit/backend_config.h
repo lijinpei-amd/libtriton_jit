@@ -20,7 +20,9 @@
 
 #pragma once
 
-#if defined(BACKEND_NPU)
+#if defined(BACKEND_AMDGPU)
+#include "triton_jit/backends/amdgpu_backend.h"
+#elif defined(BACKEND_NPU)
 #include "triton_jit/backends/npu_backend.h"
 #elif defined(BACKEND_MUSA)
 #include "triton_jit/backends/musa_backend.h"
@@ -40,7 +42,11 @@
 
 namespace triton_jit {
 
-#if defined(BACKEND_NPU)
+#if defined(BACKEND_AMDGPU)
+/// Default backend for AMD GPUs through ROCm/HIP
+using DefaultBackend = AmdgpuBackend;
+
+#elif defined(BACKEND_NPU)
 /// Default backend for NPU (Ascend)
 using DefaultBackend = NpuBackend;
 

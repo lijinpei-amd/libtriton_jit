@@ -28,7 +28,10 @@
 #include "triton_jit/backend_config.h"
 
 // ---- Backend-specific headers (centralized, operator files no longer need these) ----
-#if defined(BACKEND_NPU)
+#if defined(BACKEND_AMDGPU)
+#include <hip/hip_runtime.h>
+#include "c10/hip/HIPStream.h"
+#elif defined(BACKEND_NPU)
 #if __has_include("torch_npu/csrc/core/npu/NPUStream.h")
 #include "torch_npu/csrc/core/npu/NPUStream.h"
 #define HAS_TORCH_NPU 1
@@ -52,7 +55,9 @@
 namespace triton_jit::ops {
 
 // ---- Stream type alias ----
-#if defined(BACKEND_NPU)
+#if defined(BACKEND_AMDGPU)
+using RawStream = hipStream_t;
+#elif defined(BACKEND_NPU)
 using RawStream = aclrtStream;
 #elif defined(BACKEND_MUSA)
 using RawStream = musaStream_t;
@@ -68,7 +73,9 @@ using RawStream = CUstream;
 
 // ---- Stream getter ----
 inline RawStream get_device_stream([[maybe_unused]] const at::Tensor& t) {
-#if defined(BACKEND_NPU)
+#if defined(BACKEND_AMDGPU)
+  return static_cast<hipStream_t>(c10::hip::getCurrentHIPStream(t.device().index()).stream());
+#elif defined(BACKEND_NPU)
 #if HAS_TORCH_NPU
   return c10_npu::getCurrentNPUStream(t.device().index()).stream();
 #else

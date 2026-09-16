@@ -38,7 +38,11 @@ target_include_directories(triton_jit
     $<INSTALL_INTERFACE:include>)
 
 # Backend-specific link libraries
-if(BACKEND STREQUAL "NPU")
+if(BACKEND STREQUAL "AMDGPU")
+    target_link_libraries(triton_jit
+      PUBLIC Torch::Torch TritonJIT::amdgpu_host_api fmt::fmt-header-only
+      PRIVATE pybind11::embed)
+elseif(BACKEND STREQUAL "NPU")
     target_link_libraries(triton_jit
       PUBLIC Torch::Torch Ascend::ascendcl Ascend::runtime fmt::fmt-header-only
       PRIVATE pybind11::embed)
