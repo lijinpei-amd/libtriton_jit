@@ -384,6 +384,14 @@ class TritonJITFunctionImpl {
     return this->static_sig_;
   }
 
+  // Advanced entry point for callers that need to separate cache lookup from
+  // launch timing. Normal callers should use operator().
+  const TritonKernelImpl<Backend>& get_or_compile_kernel(std::string_view signature,
+                                                          const CompileOptions& opts,
+                                                          int device_index) const {
+    return this->get_kernel(signature, opts, device_index);
+  }
+
   // Backward-compatible overload: plain (num_warps, num_stages) are wrapped into a
   // CompileOptions carrying no extra switches, then forwarded to the primary overload.
   // Kept so existing call sites (and operator dispatch code) compile unchanged.

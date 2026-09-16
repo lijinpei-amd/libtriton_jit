@@ -1,3 +1,4 @@
+if(BUILD_TESTING)
 add_executable(test_launch_hooks test_launch_hooks.cpp)
 target_link_libraries(test_launch_hooks PRIVATE TritonJIT::triton_jit)
 add_test(NAME launch_hooks COMMAND test_launch_hooks)
@@ -54,4 +55,15 @@ if(BACKEND STREQUAL "AMDGPU")
     add_executable(test_amdgpu_metadata test_amdgpu_metadata.cpp)
     target_link_libraries(test_amdgpu_metadata PRIVATE TritonJIT::triton_jit)
     add_test(NAME amdgpu_metadata COMMAND test_amdgpu_metadata)
+endif()
+endif()
+
+# The launch-overhead benchmark currently requires a CUDA-dispatch backend.
+if(BUILD_TESTING AND BACKEND MATCHES "^(AMDGPU|CUDA|HCU|IX)$")
+    add_executable(bench_launch bench_launch.cpp)
+    target_link_libraries(bench_launch PRIVATE TritonJIT::triton_jit)
+    target_compile_definitions(
+        bench_launch
+        PRIVATE TRITON_JIT_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
 endif()
