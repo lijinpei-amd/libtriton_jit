@@ -121,6 +121,39 @@ HcuKernelMetadata load_hcu_metadata(const std::string& dir, const std::string& k
   return meta;
 }
 
+AmdgpuKernelMetadata load_amdgpu_metadata(const std::string& dir, const std::string& kernel_name) {
+  std::string path = fmt::format("{}/{}.json", dir, kernel_name);
+  std::ifstream f(path);
+  AmdgpuKernelMetadata meta;
+  if (!f.is_open()) {
+    return meta;
+  }
+
+  try {
+    nlohmann::json j = nlohmann::json::parse(f);
+    meta.shared = j.value("shared", 0u);
+    meta.symbol_name = j.value("name", std::string {});
+    meta.warp_size = j.value("warp_size", 0u);
+    meta.num_ctas = j.value("num_ctas", 1u);
+    meta.launch_cooperative_grid = j.value("launch_cooperative_grid", false);
+    meta.global_scratch_size = j.value("global_scratch_size", size_t {0});
+    meta.profile_scratch_size = j.value("profile_scratch_size", size_t {0});
+    meta.triton_version = j.value("triton_version", std::string {});
+
+    if (j.contains("target") && j["target"].is_object()) {
+      const auto& target = j["target"];
+      meta.arch = target.value("arch", std::string {});
+      meta.target_backend = target.value("backend", std::string {});
+      if (meta.warp_size == 0) {
+        meta.warp_size = target.value("warp_size", 0u);
+      }
+    }
+  } catch (const nlohmann::json::exception& e) {
+    LOG(WARNING) << fmt::format("Failed to parse AMDGPU metadata {}: {}", path, e.what());
+  }
+  return meta;
+}
+
 MluKernelMetadata load_mlu_metadata(const std::string& dir, const std::string& kernel_name) {
   std::string path = fmt::format("{}/{}.json", dir, kernel_name);
   std::ifstream f(path);

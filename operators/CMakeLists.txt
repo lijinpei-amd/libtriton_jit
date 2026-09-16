@@ -27,7 +27,10 @@
 
 # Function to configure backend-specific target settings
 function(configure_operator_target TARGET_NAME)
-    if(BACKEND STREQUAL "NPU")
+    if(BACKEND STREQUAL "AMDGPU")
+        target_link_amdgpu_libraries(${TARGET_NAME})
+        target_link_libraries(${TARGET_NAME} PRIVATE pybind11::embed)
+    elseif(BACKEND STREQUAL "NPU")
         target_link_ascend_libraries(${TARGET_NAME})
         if(TORCH_NPU_INCLUDE_PATHS)
             target_include_directories(${TARGET_NAME} PRIVATE ${TORCH_NPU_INCLUDE_PATHS})

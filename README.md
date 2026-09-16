@@ -13,6 +13,7 @@ You can define JIT functions in Python scripts and then invoke them in C++ code.
 
 It supports multiple hardware backends through a compile-time backend policy design (C++20 concepts):
 
+- **AMDGPU**: AMD GPUs through ROCm/HIP (wave32 or wave64, selected from Triton metadata)
 - **CUDA**: NVIDIA GPUs (warp size 32)
 - **MUSA**: Moore Threads GPUs (warp size 32)
 - **NPU**: Ascend/Huawei (ACL API)
@@ -214,6 +215,12 @@ pip install "torch>=2.5" "triton>=3.1.0,<3.7.0" "cmake" "ninja" "packaging" "pyb
 Remember to specify which Python root to use, since the Python root is used to find `libtorch` and `pybind11`. Use `-DBACKEND=` to select the target backend.
 
 ```shell
+# AMDGPU (AMD ROCm)
+# Use a ROCm-enabled PyTorch installation and its matching Triton package.
+cmake -S . -B build/ -DPython_ROOT="$(which python)/../.." -DBACKEND=AMDGPU
+# The backend follows the ROCm installation PyTorch itself resolves. For a non-default
+# location, export ROCM_PATH=/path/to/rocm before configuring so both agree.
+
 # CUDA (default)
 cmake -S . -B build/ -DPython_ROOT="$(which python)/../.." -DBACKEND=CUDA
 
@@ -283,7 +290,7 @@ For example, `export TORCH_CPP_LOG_LEVEL=INFO`.
 
 ## Roadmap
 
-- ~~Support more backends~~ ✓ (CUDA, MUSA, NPU, IX, MACA, MLU, GCU, HCU supported)
+- ~~Support more backends~~ ✓ (AMDGPU, CUDA, GCU, HCU, IX, MACA, MLU, MUSA, NPU supported)
 - Better argument processing
 
   - copy arguments to a buffer to ensure their lifetime;

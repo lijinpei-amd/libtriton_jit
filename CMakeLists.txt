@@ -23,11 +23,11 @@ cmake_minimum_required(VERSION 3.25 FATAL_ERROR)
 # ==============================================================================
 # Backend Selection (must be before project())
 # ==============================================================================
-set(BACKEND "CUDA" CACHE STRING "Target backend: CUDA, IX, MUSA, MACA, MLU, NPU, GCU, or HCU")
-set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "IX" "MUSA" "MACA" "MLU" "NPU" "GCU" "HCU")
+set(BACKEND "CUDA" CACHE STRING "Target backend: AMDGPU, CUDA, GCU, HCU, IX, MACA, MLU, MUSA, or NPU")
+set_property(CACHE BACKEND PROPERTY STRINGS "AMDGPU" "CUDA" "GCU" "HCU" "IX" "MACA" "MLU" "MUSA" "NPU")
 
-if(NOT BACKEND MATCHES "^(CUDA|IX|MUSA|MACA|MLU|NPU|GCU|HCU)$")
-    message(FATAL_ERROR "Invalid BACKEND: ${BACKEND}. Must be CUDA, IX, MUSA, MACA, MLU, NPU, GCU, or HCU")
+if(NOT BACKEND MATCHES "^(AMDGPU|CUDA|GCU|HCU|IX|MACA|MLU|MUSA|NPU)$")
+    message(FATAL_ERROR "Invalid BACKEND: ${BACKEND}. Must be AMDGPU, CUDA, GCU, HCU, IX, MACA, MLU, MUSA, or NPU")
 endif()
 message(STATUS "Building with backend: ${BACKEND}")
 
@@ -44,8 +44,10 @@ if(BACKEND STREQUAL "MACA")
     set(USE_MACA ON)
 endif()
 
-# Project definition (NPU, MUSA, MACA, MLU, GCU, and HCU don't need CUDA language)
-if(BACKEND STREQUAL "NPU")
+# Project definition (AMDGPU, GCU, HCU, MACA, MLU, MUSA, and NPU don't need CUDA language)
+if(BACKEND STREQUAL "AMDGPU")
+    project(TritonJIT LANGUAGES CXX VERSION 0.1.0)
+elseif(BACKEND STREQUAL "NPU")
     project(TritonJIT LANGUAGES CXX VERSION 0.1.0)
 elseif(BACKEND STREQUAL "MUSA")
     project(TritonJIT LANGUAGES CXX VERSION 0.1.0)
@@ -68,6 +70,8 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR}/cmake)
 # ==============================================================================
 if(BACKEND STREQUAL "CUDA")
     add_compile_definitions(BACKEND_CUDA)
+elseif(BACKEND STREQUAL "AMDGPU")
+    add_compile_definitions(BACKEND_AMDGPU)
 elseif(BACKEND STREQUAL "IX")
     add_compile_definitions(BACKEND_IX)
 elseif(BACKEND STREQUAL "NPU")
@@ -99,7 +103,7 @@ add_compile_definitions(BACKEND_NAME="${TRITON_BACKEND_NAME}")
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-if(NOT (BACKEND STREQUAL "NPU" OR BACKEND STREQUAL "MUSA" OR BACKEND STREQUAL "MACA" OR BACKEND STREQUAL "MLU" OR BACKEND STREQUAL "GCU" OR BACKEND STREQUAL "HCU"))
+if(NOT (BACKEND STREQUAL "AMDGPU" OR BACKEND STREQUAL "GCU" OR BACKEND STREQUAL "HCU" OR BACKEND STREQUAL "MACA" OR BACKEND STREQUAL "MLU" OR BACKEND STREQUAL "MUSA" OR BACKEND STREQUAL "NPU"))
     set(CMAKE_CUDA_STANDARD 17)
 endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -163,6 +167,13 @@ message(STATUS "Python site-packages: ${Python_SITELIB}")
 
 find_package(Torch MODULE REQUIRED)
 
+# PyTorch's ROCm package discovery resolves the ROCm tree and runs find_package(hip)
+# while Torch is being found, so configure the AMDGPU toolchain afterwards and align
+# with whatever Torch selected.
+if(BACKEND STREQUAL "AMDGPU")
+    include(BackendAMDGPU)
+endif()
+
 # Find Intel ITT Notify library (required by PyTorch)
 # Get conda prefix from Python executable path
 get_filename_component(PYTHON_BIN_DIR ${Python_EXECUTABLE} DIRECTORY)
@@ -192,6 +203,8 @@ endif()
 # ==============================================================================
 if(BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "IX")
     include(BackendCUDA)
+elseif(BACKEND STREQUAL "AMDGPU")
+    # Configured before Torch discovery above.
 elseif(BACKEND STREQUAL "NPU")
     include(BackendNPU)
 elseif(BACKEND STREQUAL "MUSA")

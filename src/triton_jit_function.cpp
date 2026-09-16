@@ -146,6 +146,11 @@ const TritonKernelImpl<Backend>& TritonJITFunctionImpl<Backend>::get_kernel(std:
 
 }  // namespace triton_jit
 
+#ifdef BACKEND_AMDGPU
+#include "triton_jit/backends/amdgpu_backend.h"
+template class triton_jit::TritonJITFunctionImpl<triton_jit::AmdgpuBackend>;
+#endif
+
 #ifdef BACKEND_NPU
 #include "triton_jit/backends/npu_backend.h"
 template class triton_jit::TritonJITFunctionImpl<triton_jit::NpuBackend>;

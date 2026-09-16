@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <string>
 
 #include "triton_jit/backends/npu_types.h"
@@ -36,6 +37,21 @@ struct GpuKernelMeta {
 struct HcuKernelMetadata {
   unsigned int shared = 0;
   std::string arch;
+};
+
+// Metadata consumed by the native AMDGPU launcher. AMD targets may use either
+// wave32 or wave64, so warp_size is part of the compiled-kernel contract.
+struct AmdgpuKernelMetadata {
+  unsigned int shared = 0;
+  std::string symbol_name;
+  std::string arch;
+  std::string target_backend;
+  unsigned int warp_size = 0;
+  unsigned int num_ctas = 1;
+  bool launch_cooperative_grid = false;
+  size_t global_scratch_size = 0;
+  size_t profile_scratch_size = 0;
+  std::string triton_version;
 };
 
 // MLU metadata for MLU backend
@@ -56,6 +72,8 @@ GpuKernelMeta load_gpu_metadata(const std::string& dir, const std::string& kerne
 NpuKernelMetadata load_npu_metadata(const std::string& dir, const std::string& kernel_name);
 
 HcuKernelMetadata load_hcu_metadata(const std::string& dir, const std::string& kernel_name);
+
+AmdgpuKernelMetadata load_amdgpu_metadata(const std::string& dir, const std::string& kernel_name);
 
 // Load MLU kernel metadata from {dir}/{kernel_name}.json
 // Returns default values if file not found.

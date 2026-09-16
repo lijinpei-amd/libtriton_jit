@@ -38,7 +38,10 @@ target_link_libraries(triton_test_framework
 )
 
 # Backend-specific configuration
-if(BACKEND STREQUAL "NPU")
+if(BACKEND STREQUAL "AMDGPU")
+    target_link_amdgpu_libraries(triton_test_framework)
+    target_link_libraries(triton_test_framework PRIVATE pybind11::embed)
+elseif(BACKEND STREQUAL "NPU")
     target_link_ascend_libraries(triton_test_framework)
     if(TORCH_NPU_INCLUDE_PATHS)
         target_include_directories(triton_test_framework PRIVATE ${TORCH_NPU_INCLUDE_PATHS})

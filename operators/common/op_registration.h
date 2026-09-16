@@ -24,6 +24,9 @@
 
 #if defined(BACKEND_NPU) || defined(BACKEND_MUSA) || defined(BACKEND_MLU) || defined(BACKEND_GCU)
 #define TRITON_DISPATCH_KEY PrivateUse1
+#elif defined(BACKEND_AMDGPU)
+// ROCm PyTorch uses the CUDA dispatcher key for AMD devices.
+#define TRITON_DISPATCH_KEY CUDA
 #else
 #define TRITON_DISPATCH_KEY CUDA
 #endif

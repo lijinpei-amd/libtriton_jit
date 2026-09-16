@@ -131,8 +131,15 @@ class TritonKernelImpl {
     // Lazy initialization
     lazy_init_handle();
 
-    // Calculate block dimensions using backend-specific warp size
-    unsigned int block_x = num_warps * Backend::WARP_SIZE;
+    // Most backends have one fixed warp size. AMDGPU spans both wave32 and
+    // wave64 targets, so it obtains the value from the compiled metadata.
+    unsigned int warp_size;
+    if constexpr (DynamicWarpSizeBackend<Backend>) {
+      warp_size = Backend::get_warp_size(dir_, kernel_name_);
+    } else {
+      warp_size = Backend::WARP_SIZE;
+    }
+    unsigned int block_x = num_warps * warp_size;
     unsigned int block_y = 1;
     unsigned int block_z = 1;
 

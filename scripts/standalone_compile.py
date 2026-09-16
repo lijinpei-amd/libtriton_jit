@@ -617,6 +617,19 @@ def _compile_a_kernel(
         # NPU/MUSA/MTGPU/MACA/GCU: no CUDA device context manager
         target = triton.runtime.driver.active.get_current_target()
         ccinfo = triton.compile(src, target=target, options=opts)
+    elif backend == "AMDGPU":
+        # ROCm PyTorch intentionally exposes AMD devices through torch.cuda.
+        # Validate the active Triton driver so a CUDA installation cannot
+        # silently produce a cubin for an AMDGPU-configured C++ runtime.
+        with torch.cuda.device(device_id):
+            target = triton.runtime.driver.active.get_current_target()
+            target_backend = str(getattr(target, "backend", "")).lower()
+            if target_backend != "hip":
+                raise RuntimeError(
+                    "BACKEND=AMDGPU requires Triton's HIP backend, but the active "
+                    f"target is {target!r}"
+                )
+            ccinfo = triton.compile(src, target=target, options=opts)
     elif backend in ["MLU"]:
         # torch_mlu only registers torch.mlu when initialization sees CPU.
         # The embedded C++ runtime has already activated MLU, so re-run
@@ -653,6 +666,13 @@ def _compile_a_kernel(
 
     cache_manager = get_cache_manager(ccinfo.hash)
     cache_dir = cache_manager.cache_dir
+
+    if backend == "AMDGPU":
+        hsaco_path = Path(cache_dir) / f"{fn.__name__}.hsaco"
+        if not hsaco_path.is_file():
+            raise RuntimeError(
+                f"Triton HIP compilation did not produce the expected {hsaco_path.name}"
+            )
 
     # For NPU backend, generate and write arg_layout to metadata JSON
     if backend == "NPU":

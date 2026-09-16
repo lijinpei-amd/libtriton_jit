@@ -53,8 +53,8 @@ struct FakeBackend {
   using KernelHandle = int;
   using LaunchOptions = int;
 
-  static constexpr unsigned int WARP_SIZE = 32;
   inline static std::atomic<int> launch_count {0};
+  inline static std::atomic<unsigned int> last_block_x {0};
   inline static std::atomic<bool> throw_on_launch {false};
 
   static void launch_kernel(StreamType,
@@ -62,11 +62,12 @@ struct FakeBackend {
                             unsigned,
                             unsigned,
                             unsigned,
-                            unsigned,
+                            unsigned block_x,
                             unsigned,
                             unsigned,
                             void**,
                             const LaunchOptions&) {
+    last_block_x = block_x;
     ++launch_count;
     if (throw_on_launch.load()) {
       throw std::runtime_error("backend launch failed");
@@ -88,6 +89,10 @@ struct FakeBackend {
     return 128;
   }
 
+  static unsigned int get_warp_size(const std::string&, const std::string&) {
+    return 64;
+  }
+
   static LaunchOptions prepare_launch(const std::string&,
                                       const std::string&,
                                       unsigned int,
@@ -98,6 +103,7 @@ struct FakeBackend {
 
   static void reset() {
     launch_count = 0;
+    last_block_x = 0;
     throw_on_launch = false;
   }
 };
@@ -169,6 +175,7 @@ void test_reentrant_clear_keeps_current_snapshot() {
   REQUIRE(enter_count == 1);
   REQUIRE(exit_count == 1);
   REQUIRE(FakeBackend::launch_count == 1);
+  REQUIRE(FakeBackend::last_block_x == 320);
   REQUIRE(captured.kernel_name == "fake_kernel");
   REQUIRE(captured.grid_x == 2);
   REQUIRE(captured.grid_y == 3);

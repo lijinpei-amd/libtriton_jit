@@ -27,15 +27,23 @@
 namespace triton_jit {
 
 template <typename T>
+concept StaticWarpSizeBackend = requires {
+  { T::WARP_SIZE } -> std::convertible_to<unsigned int>;
+};
+
+template <typename T>
+concept DynamicWarpSizeBackend = requires(const std::string& dir, const std::string& name) {
+  { T::get_warp_size(dir, name) } -> std::same_as<unsigned int>;
+};
+
+template <typename T>
 concept BackendPolicy = requires {
   typename T::StreamType;
   typename T::ContextType;
   typename T::KernelHandle;
   typename T::LaunchOptions;
-
-  // Each backend must define its warp size (CUDA: 32, IX: 64)
-  { T::WARP_SIZE } -> std::convertible_to<unsigned int>;
 }
+&& (StaticWarpSizeBackend<T> || DynamicWarpSizeBackend<T>)
 &&requires(typename T::StreamType stream,
            typename T::KernelHandle kernel,
            unsigned grid_x,
