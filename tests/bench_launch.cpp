@@ -262,6 +262,14 @@ void run_kernel_benchmark(const std::filesystem::path& fixture,
   const auto& kernel =
       function.get_or_compile_kernel(prepared.full_signature, options, device_index);
 
+  auto device_launch = [&]() {
+    std::apply(
+        [&](const auto&... args) {
+          function.launch_on_device(device_index, stream, 1, 1, 1, options, args...);
+        },
+        arguments);
+  };
+
   const auto kernel_handle = Backend::load_kernel(kernel.get_dir(), kernel.get_kernel_name());
   const unsigned int shared_memory =
       Backend::get_shared_memory(kernel.get_dir(), kernel.get_kernel_name());
@@ -307,12 +315,18 @@ void run_kernel_benchmark(const std::filesystem::path& fixture,
                   expected,
                   kernel_launch);
   validate_launch(benchmark_name,
+                  "operator_on_device",
+                  output_tensor,
+                  expected,
+                  device_launch);
+  validate_launch(benchmark_name,
                   "raw_backend",
                   output_tensor,
                   expected,
                   raw_launch);
 
   print_result(benchmark_name, "operator", measure_us(full_launch));
+  print_result(benchmark_name, "operator_on_device", measure_us(device_launch));
   print_result(benchmark_name, "kernel_launch", measure_us(kernel_launch));
   print_result(benchmark_name, "raw_backend", measure_us(raw_launch));
   print_result(benchmark_name, "arguments_only", measure_us(argument_processing));

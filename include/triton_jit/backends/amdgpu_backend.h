@@ -62,6 +62,13 @@ struct AmdgpuBackend {
                                       unsigned int shared_mem,
                                       const std::string& /*sig*/,
                                       size_t /*num_args*/) {
+    return make_kernel_launch_config(dir, kernel_name, shared_mem).options;
+  }
+
+  static KernelLaunchConfig<LaunchOptions> make_kernel_launch_config(
+      const std::string& dir,
+      const std::string& kernel_name,
+      unsigned int shared_mem) {
     AmdgpuKernelMetadata metadata = get_loaded_metadata(dir, kernel_name);
     if (metadata.global_scratch_size != 0 || metadata.profile_scratch_size != 0) {
       throw std::runtime_error(fmt::format(
@@ -71,7 +78,10 @@ struct AmdgpuBackend {
           metadata.global_scratch_size,
           metadata.profile_scratch_size));
     }
-    return {.shared_memory = shared_mem, .cooperative = metadata.launch_cooperative_grid};
+    return {
+        .warp_size = metadata.warp_size,
+        .options = {.shared_memory = shared_mem, .cooperative = metadata.launch_cooperative_grid},
+    };
   }
 
   static void launch_kernel(hipStream_t stream,

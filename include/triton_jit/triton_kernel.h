@@ -24,6 +24,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -76,6 +77,14 @@ using LaunchHooksSnapshot = std::shared_ptr<const LaunchHooksState>;
 
 LaunchHooksSnapshot get_launch_hooks_snapshot();
 
+template <typename Backend, bool = KernelInvariantLaunchConfigBackend<Backend>>
+struct KernelLaunchConfigStorage {};
+
+template <typename Backend>
+struct KernelLaunchConfigStorage<Backend, true> {
+  std::optional<KernelLaunchConfig<typename Backend::LaunchOptions>> launch_config;
+};
+
 }  // namespace detail
 
 // Forward declaration
@@ -85,7 +94,7 @@ class TritonJITFunctionImpl;
 template <BackendPolicy Backend>
 class TritonKernelImpl {
  private:
-  struct KernelState {
+  struct KernelState : detail::KernelLaunchConfigStorage<Backend> {
     std::once_flag load_once;
     std::atomic<bool> loaded {false};
     typename Backend::KernelHandle kernel_handle {};
@@ -185,20 +194,46 @@ class TritonKernelImpl {
     // Lazy initialization
     lazy_init_handle();
 
-    // Most backends have one fixed warp size. AMDGPU spans both wave32 and
-    // wave64 targets, so it obtains the value from the compiled metadata.
-    unsigned int warp_size;
-    if constexpr (DynamicWarpSizeBackend<Backend>) {
-      warp_size = Backend::get_warp_size(dir_, kernel_name_);
+    if constexpr (KernelInvariantLaunchConfigBackend<Backend>) {
+      const auto& config = *kernel_state_->launch_config;
+      launch_prepared(grid_x,
+                      grid_y,
+                      grid_z,
+                      num_warps,
+                      stream,
+                      args,
+                      signature,
+                      config.warp_size,
+                      config.options);
     } else {
-      warp_size = Backend::WARP_SIZE;
+      // Most backends have one fixed warp size. Dynamic-warp backends obtain
+      // it from compiled metadata unless they opt into the invariant config
+      // cache above.
+      unsigned int warp_size;
+      if constexpr (DynamicWarpSizeBackend<Backend>) {
+        warp_size = Backend::get_warp_size(dir_, kernel_name_);
+      } else {
+        warp_size = Backend::WARP_SIZE;
+      }
+
+      auto opts = Backend::prepare_launch(dir_, kernel_name_, shared_memory_, signature, num_args);
+      launch_prepared(
+          grid_x, grid_y, grid_z, num_warps, stream, args, signature, warp_size, opts);
     }
+  }
+
+  void launch_prepared(unsigned int grid_x,
+                       unsigned int grid_y,
+                       unsigned int grid_z,
+                       int num_warps,
+                       typename Backend::StreamType stream,
+                       void** args,
+                       const std::string& signature,
+                       unsigned int warp_size,
+                       const typename Backend::LaunchOptions& opts) const {
     unsigned int block_x = num_warps * warp_size;
     unsigned int block_y = 1;
     unsigned int block_z = 1;
-
-    // Prepare backend-specific launch options (no branching)
-    auto opts = Backend::prepare_launch(dir_, kernel_name_, shared_memory_, signature, num_args);
 
     // Take one immutable snapshot for the whole launch. Updating or clearing the
     // process-wide hooks from another thread (or from a hook itself) only affects
@@ -241,6 +276,10 @@ class TritonKernelImpl {
   void lazy_init_handle() const {
     std::call_once(kernel_state_->load_once, [this]() {
       auto kernel_handle = Backend::load_kernel(dir_, kernel_name_);
+      if constexpr (KernelInvariantLaunchConfigBackend<Backend>) {
+        kernel_state_->launch_config.emplace(
+            Backend::make_kernel_launch_config(dir_, kernel_name_, shared_memory_));
+      }
       kernel_state_->kernel_handle = kernel_handle;
       kernel_state_->loaded.store(true, std::memory_order_release);
     });

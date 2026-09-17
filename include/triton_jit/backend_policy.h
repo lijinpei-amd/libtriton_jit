@@ -36,6 +36,24 @@ concept DynamicWarpSizeBackend = requires(const std::string& dir, const std::str
   { T::get_warp_size(dir, name) } -> std::same_as<unsigned int>;
 };
 
+template <typename LaunchOptions>
+struct KernelLaunchConfig {
+  unsigned int warp_size;
+  LaunchOptions options;
+};
+
+// Optional backend extension for launch configuration that is invariant for a
+// compiled kernel. TritonKernelImpl caches this result after lazy module
+// loading. Backends whose launch options depend on the per-call signature or
+// argument count should not provide this function.
+template <typename T>
+concept KernelInvariantLaunchConfigBackend =
+    requires(const std::string& dir, const std::string& name, unsigned int shared_memory) {
+      {
+        T::make_kernel_launch_config(dir, name, shared_memory)
+        } -> std::same_as<KernelLaunchConfig<typename T::LaunchOptions>>;
+    };
+
 template <typename T>
 concept BackendPolicy = requires {
   typename T::StreamType;
